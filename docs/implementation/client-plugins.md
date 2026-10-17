@@ -477,6 +477,13 @@ tsmod-launcher.
      * With a `[[block]]` on the stub plugin's version, `suspend` must stop its callbacks (it
        logs every call) and `kick` must drop the client with the reason.
      * A `match = "exact"` offer for a newer stub version must answer `restart`.
+     * Restart and reconnect, with a fake launcher that records requests:
+       * with `TSMOD_LAUNCHER_IPC` set, the client must send `relaunch` and quit;
+       * with only `ts/launcher.toml`, it must start the fake launcher with the `relaunch`
+         arguments, and the password must arrive in the environment, not in argv;
+       * with neither, it must show the quit-and-inform card;
+       * after a quit, the next start must show "Reconnect to …" and must not connect without a
+         click.
   6. Steam HL25: manual for v1 (validation.md §5, Steam status invisible while testing).
 
 ## 12. Wire compatibility
@@ -504,7 +511,17 @@ say so.
 
 The client already reports its version in the `_tsrs` userinfo (§12), and the server already has
 a refusal path in `ClientConnect` (`rules::client_connect`, which returns the engine's reject
-reason). So the check happens before the player joins, with no new message.
+reason). How a mismatch is handled depends on how old the client is:
+
+* **Clients that understand `TSPkg`** (`_tsrs` at or above the first port release with it,
+  `TSPKG_SINCE` in `shared::protocol::port`): the server lets them in and sends op 5
+  `port_version` (§13.3). The client then shows the update card, with the launcher's help where
+  it can (§13.5). The server kicks with the refusal text if the client hasn't left within
+  `sv_plugin_check_time`.
+  This path exists because `client.dll` never sees a `ClientConnect` refusal: the engine shows
+  the reason, and the client can't act on it.
+* **Older port clients, and TS 3.0's client** (with `sv_client_require_port 1`): refused at
+  `ClientConnect` with the text below. They can't receive `TSPkg` (§12).
 
 | cvar (server, port addition) | default | meaning |
 |---|---|---|
@@ -512,9 +529,14 @@ reason). So the check happens before the player joins, with no new message.
 | `sv_client_require_port` | 0 | 1 also refuses clients without `_tsrs`: TS 3.0's original client, and port clients older than `_tsrs` |
 | `sv_client_version_url` | `""` | shown in the refusal; the default text names the launcher and the releases page |
 
+`sv_client_version` and `sv_client_require_port` are `FCVAR_SERVER`, so they appear in the
+server's A2S rules. tsmod-launcher's server browser reads them and checks before the player
+joins (§13.5).
+
 * **The refusal reason** is formatted, for example "This server needs The Specialists port
-  3.0.8 (you have 3.0.7). Update with the TS launcher, or from <url>." It's cut to the engine's
-  reject buffer, about 128 bytes. `rules::client_connect`'s `&'static str` reason becomes an
+  3.0.8 (you have 3.0.7). Update with the TS launcher, or from <url>. [tsrs:=3.0.8]". It's cut to
+  the engine's reject buffer, about 128 bytes, and the tag at the end is always kept. The tag
+  carries the requirement in machine-readable form, for tools that read the engine log. `rules::client_connect`'s `&'static str` reason becomes an
   owned string for this.
 * **Bots** are never checked. A `_tsrs` value that isn't a version (`parse_version` fails)
   counts as a mismatch, unless the policy is `any`.
@@ -577,6 +599,7 @@ New `TSPkg` ops (same framing as §6.2):
 ```
 op 3 require   id, version requirement (≤ 48), flags (1 required)
 op 4 block     id, version requirement, byte action (1 suspend, 2 kick), string reason (≤ 64)
+op 5 port_version   version requirement (≤ 48), string url (≤ 96); id is "tsrs"
 ```
 
 * **Suspend:** the port stops calling the plugin's callbacks while the player is on this server:
@@ -591,10 +614,8 @@ op 4 block     id, version requirement, byte action (1 suspend, 2 kick), string 
 * **Kick:** the server drops the player with the block's reason, naming the plugin and version.
   The client shows the reason in its disconnect dialog.
 * **Getting the right version:** a loaded plugin can't be swapped while the game runs (§9), so
-  an update for a loaded plugin answers `restart`. The card then offers "Restart and reconnect":
-  it writes the server address to `cl_plugins_data/.reconnect` and quits. At the next start the
-  new version is verified as usual, and the port connects to that address. Whether the engines
-  allow a clean relaunch is open question 7; without one, the card says "restart the game".
+  an update for a loaded plugin answers `restart`. A port update always needs a restart too.
+  Both go through restart and reconnect (§13.5).
 * **Grace period:** the server applies none of this until `sv_plugin_check_time` has passed or
   the client has answered every offer, so a player who is approving and downloading isn't
   kicked mid-download. Required-plugin kicks wait for the download to finish, up to
@@ -611,6 +632,138 @@ op 4 block     id, version requirement, byte action (1 suspend, 2 kick), string 
 | `cl_version_strict` | 0 | 1 disconnects from servers whose port version differs from the client's |
 
 `cl_plugins_list` shows, for the current server, which loaded plugins are suspended and why.
+
+### 13.5 Restart, reconnect and updates
+
+When the game must restart to get onto a server, because of a plugin update (§13.3) or a port
+version the server needs (op 5), the client uses the first of these that's available:
+
+1. **The launcher is running:** the client tells it directly, over IPC.
+2. **The launcher is installed but not running:** the client starts it with relaunch arguments.
+3. **No launcher, but the game can relaunch itself:** it does.
+4. **None of these:** the client offers to quit, and tells the player how to come back.
+
+Updating the port itself always needs the launcher (case 1 or 2), and the launcher always asks
+first. Without a launcher, the card says where to get the version and offers to quit.
+
+#### Finding the launcher
+
+* **Launched by the launcher:** tsmod-launcher sets these environment variables on the game
+  process, and the client reads them at `Initialize`:
+  * `TSMOD_LAUNCHER`: the launcher's executable;
+  * `TSMOD_LAUNCHER_INSTANCE`: its installation id (as in `ts-launcher list`);
+  * `TSMOD_LAUNCHER_IPC`: the IPC endpoint, while the launcher is running.
+* **Started some other way** (from Steam directly, or a desktop shortcut): the launcher writes
+  `ts/launcher.toml` into every installation it manages, holding the executable path, the
+  installation id and the launcher version. It's rewritten at every launch and install.
+* **Checks:** the client accepts a launcher only if the executable exists and the file names
+  this game directory as its installation's root. A stale or foreign file is ignored, as if
+  there were no launcher.
+
+#### 1. Launcher running: IPC
+
+* **The endpoint:**
+  * Linux: a Unix socket, `$XDG_RUNTIME_DIR/ts-launcher-<uid>.sock` (falling back to
+    `/tmp/ts-launcher-<uid>/sock`, mode 0700);
+  * Windows: the named pipe `\\.\pipe\ts-launcher-<user SID>`, accessible only to the current
+    user.
+* **The request:** one JSON line per request.
+
+  ```json
+  {"op": "relaunch", "instance": "ab12", "pid": 41733,
+   "connect": "203.0.113.5:27015", "password": "",
+   "reason": "port" | "plugin", "port_version": ">=3.0.8, <3.1", "plugin": "webview@0.2.0",
+   "server_name": "Bob's TS"}
+  ```
+
+* **The handshake:**
+  1. The launcher answers `{"ok": true}`, and the client quits the game (`quit`).
+  2. The launcher waits for that pid to exit, up to 30 s. It has the `Child` handle when it
+     started the game itself.
+  3. If the request is for a port update, it asks the player (below).
+  4. It relaunches the installation with `+connect <address>`, and `+password` when one was
+     given. This is the launcher's existing `launch(install, opts, extra)`.
+* **No answer within 2 s,** or an error: fall back to case 2.
+
+#### 2. Launcher installed, not running: relaunch arguments
+
+The client starts the launcher detached, then quits:
+
+```
+ts-launcher relaunch --instance ID --wait-pid PID --connect ADDR [--password-env TSMOD_RECONNECT_PASSWORD]
+                     [--port-version REQ] [--plugin ID@VERSION] [--server-name NAME]
+```
+
+* The password goes in the environment variable `--password-env` names, never on the command
+  line, where other users could read it.
+* `relaunch` is a new launcher subcommand. It opens the launcher's window on a "Reconnecting to
+  <server>" view that waits for the game to exit, then runs the same steps as the IPC request.
+  When the launcher already has an instance open, the new process hands the request to it over
+  IPC and exits.
+
+#### Updating the port through the launcher
+
+When the request is for a port update, the launcher shows:
+
+* the server's name and address;
+* the required version, and the installed one;
+* the release it will install: the newest port release that satisfies the requirement, from the
+  same release source it already uses (`--port-version`). Nothing the server sends selects a
+  download location; the server gives only a version requirement.
+
+The choices are:
+
+* **"Update and reconnect":** installs that release into the installation, as
+  `install --port --port-version TAG` does, validates it (`validate`), then relaunches with
+  `+connect`.
+* **"Reconnect without updating":** the server will refuse again; the launcher says so.
+* **"Cancel":** doesn't start the game.
+
+Notes:
+
+* **Downgrades:** a requirement that only an older release satisfies is shown as a downgrade:
+  "This server runs an older version. Installing it changes this installation for every
+  server." The default is Cancel. A second installation for that server is open question 7.
+* **Plugin updates** need no launcher update step. The new plugin version was already approved
+  in game, and the launcher's start-up check (§7.1) finds it approved.
+* **Before joining:** in the launcher's own server browser, the launcher compares a server's
+  version (A2S info, "The Specialists v3.0.8") and its `sv_client_version` rule with the
+  installed port. It offers the same update dialog before starting the game, so the round trip
+  through the game isn't needed.
+
+#### 3. No launcher: self-relaunch
+
+* **FWGS:** the client re-executes the engine binary with its original arguments plus
+  `+connect`. It reads them from `/proc/self/cmdline` on Linux and `GetCommandLineW` on Windows,
+  then quits.
+* **Steam HL25:** the client opens `steam://run/70//-game ts +connect <address>/`, through
+  `xdg-open` or `ShellExecuteW`, then quits. Steam starts the game again once it has exited.
+* Each is used only where §11's e2e has shown it works on that engine and platform (open
+  question 8). Otherwise it falls to case 4.
+
+#### 4. Nothing else: quit and inform
+
+* **The card says:** "Restart the game and reconnect to <server name> (<address>)", and for a
+  port update also "This server needs version <requirement>; get it from <url> or the TS
+  launcher".
+* **The address:** it's copied to the clipboard (`SDL_SetClipboardText`).
+* **The buttons:** "Quit now" and "Stay" (stay disconnected, or on the server until it kicks).
+* **Next start:** the client writes `cl_plugins_data/.reconnect` with the address and a time.
+  At the next start, within 10 minutes, the main menu shows "Reconnect to <server>?", a click
+  card under §7.3's rules. Nothing connects without that click.
+
+#### Safety
+
+* **The IPC endpoint and `relaunch` only ever start the game, connect, or ask.** Any local
+  program could send a request, so the launcher treats every update as a question for the
+  player, never as an instruction.
+* **What a request can contain:**
+  * the address must be a `host:port`;
+  * the requirement must parse as semver;
+  * the plugin field is only shown, never acted on;
+  * releases come only from the launcher's configured source.
+* **A server can't make the launcher download anything:** it can only state a version
+  requirement, and the player still has to choose "Update".
 
 ## 14. Open questions
 
@@ -631,13 +784,14 @@ op 4 block     id, version requirement, byte action (1 suspend, 2 kick), string 
    start of the helper?
 6. Should the launcher be able to install packages from the mod's own release feed, with the
    same cards, so players needn't wait for a server to offer them?
-7. **Restart and reconnect** (§13.3): can the client quit and relaunch itself cleanly?
-   * HL25: the Steam URL `steam://rungameid/70//-game ts +connect`.
-   * FWGS: re-exec with `+connect`.
-   * Or should the launcher watch `.reconnect` and do it? Under Wine the self-relaunch is the
-     least certain.
-8. **Mod version refusals and the launcher:** should the refusal reason carry a machine-readable
-   tag, such as `[tsrs:3.0.8]`, so tsmod-launcher can offer to fetch that release and reconnect?
+7. **Downgrades** (§13.5): when a server needs an older port release, should the launcher offer
+   a second installation for that server instead of changing the player's main one?
+8. **Self-relaunch** (§13.5 case 3): does `steam://run/70//-game ts +connect …` relaunch
+   reliably while the old process is still exiting? Does an FWGS re-exec work under Wine, where
+   the "original arguments" are the Windows command line? Each must pass e2e before it's
+   enabled; until then, those platforms use case 4.
+9. **Passwords:** the client can read the `password` cvar to pass it on, but should it? The
+   alternative is asking the player again after the relaunch.
 
 ## 15. Milestones (port issues)
 
@@ -648,10 +802,18 @@ op 4 block     id, version requirement, byte action (1 suspend, 2 kick), string 
    and the plugin API additions.
 4. Client: the offer flow, downloads, the VGUI cards and their safeguards (§7.3), late loading,
    e2e.
-5. tsmod-launcher: the same verification and approval UI, using `plugin-pkg`.
+5. tsmod-launcher: the same verification and approval UI, using `plugin-pkg`. Also:
+   * the `TSMOD_LAUNCHER*` environment variables and `ts/launcher.toml`;
+   * the IPC endpoint and the `relaunch` subcommand;
+   * the update-and-reconnect dialog;
+   * the server browser's version check.
+
+   These are launcher issues, filed in `the-specialists-mod/tsmod-launcher`.
 6. Version matching:
-   * the mod version: `sv_client_version`, `sv_client_require_port`, the formatted refusal,
-     `cl_version_strict` and `client_port_version`. This part needs no plugins, and can ship
-     first.
+   * the mod version: `sv_client_version`, `sv_client_require_port`, the formatted refusal
+     with its tag, `cl_version_strict` and `client_port_version`. This part needs no plugins,
+     and can ship first. Op 5 and the update card come with `TSPkg`.
+   * restart and reconnect (§13.5): finding the launcher, the IPC request and `relaunch`
+     arguments, self-relaunch where e2e passes, the quit-and-inform card and `.reconnect`.
    * plugins: `match`, `[[block]]` and `[policy]`, `tspkg list`, ops 3 and 4, suspend and
      resume, restart and reconnect, and the plugin API events.
