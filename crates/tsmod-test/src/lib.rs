@@ -24,6 +24,12 @@
 //! scripted kill's `damage` event and sounds with their channel and responsible player, and reads
 //! a non-entvars key back with `entity_key`.
 //!
+//! Plugin API version 7: at `game_init` it does what an AMX Mod X module does at `Meta_Attach`
+//! (`attach_plugin` as `test_attached`: the name rules, its data directory, a command, a bot
+//! backend and a listener owned by it, then `detach_plugin` and a second attach with a new id).
+//! Every frame its bots' kung-fu and superjump flags must match `player_info`, and `frame_info`'s
+//! team scores `game_state`'s.
+//!
 //! The plugin keeps its state behind a mutex, which it never holds while calling the API: the
 //! server calls back into the plugin from inside API calls (`create_bot` spawns the bot).
 
@@ -35,9 +41,9 @@ use std::ffi::{CStr, CString, c_char, c_int};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use ts_plugin_api::{
-    BotBackend, BotCmd, BotCmdResult, DEFERRED, DamageEvent, EntityInfo, FrameInfo, GameState, HamArg, HamCall, INVALID, ItemInfo,
-    KillInfo, LoadInfo, NOT_PLAYER, OK, ObjectiveInfo, PlayerInfo, PlayerSnapshot, Plugin, PluginApi, PluginId, UNSUPPORTED, VERSION,
-    WeaponEntry, cmd, cmd_event, entity, ham, item, log, player_flag, powerup, stunt,
+    BotBackend, BotCmd, BotCmdResult, DEFERRED, DamageEvent, EXISTS, EntityInfo, FrameInfo, GameState, HamArg, HamCall, INVALID, ItemInfo,
+    KillInfo, LoadInfo, NO_PLUGIN, NOT_PLAYER, OK, ObjectiveInfo, PlayerInfo, PlayerSnapshot, Plugin, PluginApi, PluginId, UNSUPPORTED,
+    VERSION, WeaponEntry, cmd, cmd_event, entity, ham, item, log, player_flag, powerup, stunt,
 };
 
 /// TS weapon id of the M4 (`shared::weapons::id::M4`), bought for the test bots, and of the
@@ -300,6 +306,9 @@ const DESCRIPTOR: Plugin = Plugin {
 
 /// The listener (version 5): what a metamod plugin registers with `add_listener`.
 const LISTENER: Plugin = Plugin { name: c"tsmod_test listener".as_ptr(), player_spawned: Some(listener_spawned), ..Plugin::EMPTY };
+/// Version 7: the attached identity's listener.
+const LISTENER_ATTACHED: Plugin =
+    Plugin { name: c"tsmod_test attached listener".as_ptr(), player_spawned: Some(attached_spawned), ..Plugin::EMPTY };
 
 const BACKEND: BotBackend = BotBackend {
     size: size_of::<BotBackend>() as u32,
@@ -328,9 +337,85 @@ extern "C" fn game_init() {
     // A listener, and one the server must refuse (a short descriptor).
     let bad = Plugin { size: 8, ..LISTENER };
     // SAFETY: both descriptors live for the calls; the server copies the good one.
-    let (handle, refused) = unsafe { ((a.add_listener)(&LISTENER), (a.add_listener)(&bad)) };
+    let (handle, refused) = unsafe { ((a.add_listener)(NO_PLUGIN, &LISTENER), (a.add_listener)(NO_PLUGIN, &bad)) };
     with(|s| s.listener = handle);
     check("add_listener", handle > 0 && refused == INVALID);
+    attach_checks(a, &name);
+}
+
+/// `data_dir` of `plugin`: its length (or status) and the directory.
+fn data_dir_of(a: &PluginApi, plugin: PluginId) -> (c_int, String) {
+    let mut buf = [0 as c_char; 512];
+    // SAFETY: `buf` is writable for its length.
+    let n = unsafe { (a.data_dir)(plugin, buf.as_mut_ptr(), buf.len() as c_int) };
+    // SAFETY: `buf` holds a NUL-terminated string (zeroed when `data_dir` wrote nothing).
+    (n, unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned())
+}
+
+/// Version 7: what an AMX Mod X module does with `attach_plugin` / `detach_plugin`.
+fn attach_checks(a: &PluginApi, own: &str) {
+    const ATTACHED: &CStr = c"test_attached";
+    let own = CString::new(own).unwrap_or_default();
+    // SAFETY: NULL or NUL-terminated names for the calls.
+    let (id, again, loaded, bad, null) = unsafe {
+        (
+            (a.attach_plugin)(ATTACHED.as_ptr()),
+            (a.attach_plugin)(c"TEST_Attached".as_ptr()),
+            (a.attach_plugin)(own.as_ptr()),
+            (a.attach_plugin)(c"a b".as_ptr()),
+            (a.attach_plugin)(std::ptr::null()),
+        )
+    };
+    let (n, dir) = data_dir_of(a, id);
+    let in_dir = n > 0 && (dir.ends_with("tsmod/test_attached/") || dir.ends_with("tsmod\\test_attached\\"));
+    // SAFETY: NUL-terminated names and descriptors that live for the calls; `status` lives for
+    // the process, and the server copies the backend and the listener.
+    let (cmd, backend, listener, stranger) = unsafe {
+        (
+            (a.register_command)(id, c"tsmod_test_attached_status".as_ptr(), status),
+            (a.register_bot_backend)(id, ATTACHED.as_ptr(), &BACKEND),
+            (a.add_listener)(id, &LISTENER_ATTACHED),
+            (a.add_listener)(id + 1000, &LISTENER_ATTACHED),
+        )
+    };
+    // SAFETY: a NUL-terminated message for the call.
+    unsafe { (a.log)(id, log::INFO, c"attached".as_ptr()) };
+    check(
+        "attach_plugin",
+        id > 0
+            && id != with(|s| s.id).unwrap_or(0)
+            && again == EXISTS
+            && loaded == EXISTS
+            && (bad, null) == (INVALID, INVALID)
+            && in_dir
+            && cmd == OK
+            && backend == OK
+            && listener > 0
+            && stranger == INVALID,
+    );
+    let (first, second, of_loaded) = ((a.detach_plugin)(id), (a.detach_plugin)(id), (a.detach_plugin)(with(|s| s.id).unwrap_or(0)));
+    let (gone_dir, _) = data_dir_of(a, id);
+    // SAFETY: as above.
+    let late_backend = unsafe { (a.register_bot_backend)(id, ATTACHED.as_ptr(), &BACKEND) };
+    // SAFETY: as above.
+    let new_id = unsafe { (a.attach_plugin)(ATTACHED.as_ptr()) };
+    check(
+        "detach_plugin",
+        first == OK
+            && second == INVALID
+            && of_loaded == INVALID
+            && (a.detach_plugin)(NO_PLUGIN) == INVALID
+            && gone_dir == INVALID
+            && late_backend == INVALID
+            && (a.remove_listener)(listener) == INVALID
+            && new_id > id
+            && (a.detach_plugin)(new_id) == OK,
+    );
+}
+
+/// The attached identity's listener: removed by `detach_plugin` before anything calls it.
+extern "C" fn attached_spawned(_idx: c_int) {
+    check("detach_plugin_listener", false);
 }
 
 /// The listener's `player_spawned`: heard once, and never after [`remove_listener`](PluginApi::remove_listener).
@@ -508,7 +593,8 @@ fn frame_checks(a: &PluginApi, g: &globalvars_t) -> Vec<PlayerSnapshot> {
             && rc_s == OK
             && f.time == g.time
             && f.highest_edict >= g.maxClients
-            && (f.teamplay, f.ctb, f.mode, f.round) == (s.teamplay, s.ctb, s.mode, s.round),
+            && (f.teamplay, f.ctb, f.mode, f.round) == (s.teamplay, s.ctb, s.mode, s.round)
+            && f.team_scores == s.team_scores,
     );
     let mut items = vec![ItemInfo::default(); 256];
     // SAFETY: `items` is writable for 256 entries.
@@ -535,6 +621,9 @@ fn snapshot_checks(a: &PluginApi, b: &mut Bot, snap: &PlayerSnapshot, i: &Player
     let same =
         snap.user_id > 0 && snap.flags & player_flag::BOT != 0 && snap.team == i.team && origin(b.idx).is_some_and(|o| o == snap.origin);
     check("players", same);
+    // Version 7: the permanent power-ups, as `player_info` has them.
+    let powers = |f: c_int| snap.flags & f != 0;
+    check("snapshot_powers", powers(player_flag::KUNG_FU) == (i.kungfu != 0) && powers(player_flag::SUPERJUMP) == (i.superjump != 0));
     let mut inv = vec![WeaponEntry::default(); 40];
     // SAFETY: `inv` is writable for 40 entries.
     let n = unsafe { (a.player_inventory)(b.idx, inv.as_mut_ptr(), inv.len() as c_int) };

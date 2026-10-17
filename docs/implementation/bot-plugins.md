@@ -11,6 +11,11 @@ backend**:
   [the-specialists-mod/tsmod-rcbot-rs](https://github.com/the-specialists-mod/tsmod-rcbot-rs).
   RCBot is GPL, so it is never linked into the server; it uses the same plugin API as the AMX Mod
   X modules. The in-repo `tsmod_test` (`crates/tsmod-test`) is a stub backend for the tests.
+* **an attached plugin's backend** (plugin API version 7, #290): a metamod plugin, such as an AMX
+  Mod X module, that took a plugin identity with `attach_plugin` ([plugin-api.md](plugin-api.md)
+  §1.4) registers a backend as a loaded plugin does. This is how an AMX Mod X-hosted bot (a Pawn
+  plugin on Rust AMXX modules, `the-specialists-mod/tsmod-amxx-rcbot`) becomes
+  `ts_bot_backend rcbot_amxx` (§3.1).
 
 The whole layer is a port addition: TS has one hard-wired bot AI, on listen servers only.
 
@@ -62,7 +67,7 @@ backend through `bot_backend` (no behaviour change for native):
 
 | Site | Now |
 |---|---|
-| `server-dll` `GameDLLInit` | `bot_backend::game_init` (registers native, then its `game_init`) |
+| `server-dll` `GameDLLInit` | `bot_backend::game_init` (registers native, first in the list even when an attached plugin registered a backend before, then its `game_init`) |
 | `server-dll` `StartFrame` | `bot_backend::start_frame` (the host's quota, then `think`) |
 | `rules::start_rules` (`CTSGameRules::Init`) | `bot_backend::map_init` (native: nodes and bot texts) |
 | `rules::mapcycle` (the map end's `Init`) | `bot_backend::map_init` |
@@ -140,6 +145,31 @@ Port cvar, default `native`. **Read at map start** (`rules::install`, right afte
   `activate`. The quota then adds the new backend's bots. The gameplay ruleset (#100) doesn't change
   the backend.
 
+### 3.1 Backends of attached plugins (version 7)
+
+An AMX Mod X-hosted backend registers at one of two points, and both work without an extra map
+reload:
+
+* **At `Meta_Attach` / `AMXX_Attach`** (an AMXX module): before the game's `GameDLLInit`, so before
+  native registers. Native is still put first (the default and the fallback), and the first map
+  start selects the attached backend like any other when `ts_bot_backend` names it (FWGS's
+  dedicated server runs the server config before the first map; on the Steam engines the config
+  runs after it, which reloads the first map once, as for a `tsmod_*` backend).
+* **In a Pawn `plugin_init`**: AMX Mod X runs it from metamod's `ServerActivate` post hook, after
+  `bot_backend::map_start` chose the map's backend (in `CWorld::Precache`) and after the bot
+  manager's `ServerActivate`. A name that wasn't registered then resolved to native (with the
+  "unknown `ts_bot_backend`" warning). `bot_backend::register_plugin` therefore checks, once a map
+  start has run: if native runs and `ts_bot_backend` now resolves to the new backend, it switches
+  at once, as a map start would (`switch_to`: native's `deactivate`, its bots kicked, `[ts] bots:
+  backend <name>`, the new one's `activate`); the quota then adds the new backend's bots. The
+  reload watcher then sees the running backend matching the cvar and reloads nothing. On later
+  maps the backend is registered already and the map start selects it.
+
+`create_bot` takes the attached plugin's id. When the plugin detaches (`detach_plugin`), its
+backend is unregistered; if it was active, it is deactivated, its bots kicked and native
+activated mid-map (`bot_backend::drop_plugin`). A `ts_bot_backend` still naming it then resolves
+to native, so nothing reloads.
+
 ## 4. Who owns what
 
 * **The host** owns the quota (`ts_bot_quota`: names `Bot Neo`, ..., one add or kick per half
@@ -154,7 +184,10 @@ Port cvar, default `native`. **Read at map start** (`rules::install`, right afte
 
 ## 5. Writing a plugin backend
 
-1. Export `TSRS_PluginLoad` (plugin-api.md §1.2); check `api->version == 6` (`ts_plugin_api::VERSION`).
+1. Export `TSRS_PluginLoad` (plugin-api.md §1.2); check `api->version == 7` (`ts_plugin_api::VERSION`).
+   A metamod plugin instead gets the table from `CreateInterface` and its id from
+   `attach_plugin("<name>")` (plugin-api.md §1.4), and hears the game through a listener it owns
+   (`add_listener(id, &descriptor)`).
 2. In it (or in `game_init`): `register_bot_backend(id, "rcbot", &backend)` with `add_bot`,
    `activate`, `deactivate`, `adopt_bot`. Register commands (`rcbot ...`) and cvars, read data
    from `data_dir(id)` (`<gamedir>/tsmod/<name>/`: waypoints, learned data).
@@ -163,7 +196,8 @@ Port cvar, default `native`. **Read at map start** (`rules::install`, right afte
    model on unconverted, or a CP1252 byte turns into U+FFFD's three bytes (#190).
 4. Every `start_frame` while active: read the frame once (version 6: `players` for every slot,
    `frame_info`, `items`; read `player_inventory` again only when a `PlayerSnapshot`'s
-   `inventory_serial` moved), then for each bot think and call `run_cmd` once with
+   `inventory_serial` moved; version 7: the snapshot's `KUNG_FU` / `SUPERJUMP` flags carry the
+   permanent power-ups, `FrameInfo::team_scores` the team scores), then for each bot think and call `run_cmd` once with
    `cmd::SET_VIEW | cmd::AUTO_MSEC`: the server turns the bot as its own bots turn, picks `msec`
    from the frame time, and reports the result. Adopt `BotCmdResult::v_angle` after a
    `FIXANGLE` event (a spawn or teleport turned the bot), drop the path after `TELEPORTED`.
@@ -197,7 +231,9 @@ of the map's entities.
 ## 6. Tests
 
 * Unit (`cargo test`): the native rules' 3.0 defaults (`bots::rules`) and TS 2.1's overrides (`ts21_server::bots::tests`: timers, gate, view, button slots, texts, buy and state helpers), backend selection, quota names, the loader (plugin-api.md §6), the API's
-  bot checks, the stub's descriptor.
+  bot checks, the stub's descriptor; version 7: an attached plugin's backend (registered before
+  native, which stays the default; gone after `detach_plugin`) and when a late backend takes over
+  (`plugins::tests`, `bot_backend::tests`).
 * `cargo xtask plugins [roots...]` (all seven roots by default, in parallel, ~1 min): installs
   `tsmod_test` and fixtures the loader must skip (`tsmod_test_badver`, `_badsize`, `_refuse`, a
   copy of the server library as `tsmod_noexport`, the other architecture's build as
@@ -233,7 +269,14 @@ of the map's entities.
   entity_touch, damage (the scripted kill as a `DamageEvent`), weapon_fired (once the kung-fu
   checks are done each bot gets an M4 with `ts_give`, which needs `sv_cheats`, and pulls the
   trigger every second) and item_pickup (a `ts_groundweapon` Beretta spawned beside the bot and
-  handed over 2 s later with `Ham_Use`)), no `FAIL`, no crash. The fixtures are removed
+  handed over 2 s later with `Ham_Use`); plugin API version 7, #290: attach_plugin (in
+  `game_init` the stub attaches `test_attached` as an AMX Mod X module would: bad and taken names
+  refused, its own loaded name included; the data directory `tsmod/test_attached/`, a command, a
+  bot backend and a listener of its own), detach_plugin (the id is dead for `data_dir` and
+  `register_bot_backend`, its listener is gone, a loaded plugin's id and `NO_PLUGIN` are refused,
+  attaching again gives a new id) and snapshot_powers (a bot's `KUNG_FU` / `SUPERJUMP` flags
+  against `player_info`), with `frame_info`'s team scores checked against `game_state`), no
+  `FAIL`, no crash. The fixtures are removed
   afterwards and by every `install`, so other scenarios run without plugins.
 * Native parity: `cargo xtask bots`, `play`, `test` unchanged.
 
@@ -245,6 +288,9 @@ of the map's entities.
   `addbot` ones.
 * `create_bot` is refused unless the caller's backend is active, so a backend sees only its own
   bots.
+* Version 7: a backend that registers after the map's selection takes over only from native. If
+  another plugin backend runs, the `ts_bot_backend` change reloads the map as usual. The switch
+  happens mid-map, so native bots are kicked then rather than at a map start.
 * Licence: `ts-plugin-api` is MIT, like the rest of the workspace (`LICENSE`), so GPL bot
   libraries such as tsmod-rcbot-rs build against a permissively licensed interface crate
   (#104 §5).

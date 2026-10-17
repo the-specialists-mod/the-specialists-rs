@@ -91,76 +91,147 @@ struct Loaded {
     id: PluginId,
     name: String,
     hooks: Option<Rc<dyn PluginHooks>>,
+    /// Version 7: a plugin the server didn't load that took an identity (`attach_plugin`).
+    attached: bool,
 }
 
-static PLUGINS: Global<RefCell<Vec<Loaded>>> = Global(RefCell::new(Vec::new()));
+/// The plugins being loaded, loaded or attached, and the next id to hand out.
+struct Registry {
+    next: PluginId,
+    list: Vec<Loaded>,
+}
+
+impl Registry {
+    /// A new entry for `name`: its id, or `None` if a plugin has the name (letter case ignored:
+    /// the data directory's name, and Windows file names, don't tell case apart).
+    fn add(&mut self, name: &str, attached: bool) -> Option<PluginId> {
+        if self.list.iter().any(|l| l.name.eq_ignore_ascii_case(name)) {
+            return None;
+        }
+        // Ids are never reused (#291): a failed or detached plugin may still hold its id.
+        let id = self.next;
+        self.next = id.checked_add(1)?;
+        self.list.push(Loaded { id, name: name.to_owned(), hooks: None, attached });
+        Some(id)
+    }
+
+    /// Drops the entry `id` (if `attached` says it is that kind): true if it was there.
+    fn remove(&mut self, id: PluginId, attached: bool) -> bool {
+        let before = self.list.len();
+        self.list.retain(|l| l.id != id || l.attached != attached);
+        self.list.len() != before
+    }
+}
+
+static PLUGINS: Global<RefCell<Registry>> = Global(RefCell::new(Registry { next: 1, list: Vec::new() }));
 
 /// Reserves an id for the plugin `name` about to be loaded (its load function may already call
-/// the API with it). [`attach`] completes it, [`forget`] drops it if the load fails.
-pub fn reserve(name: &str) -> PluginId {
-    let mut p = PLUGINS.0.borrow_mut();
-    // Ids are never reused, also after a failed load.
-    let id = p.iter().map(|l| l.id).max().unwrap_or(0) + 1;
-    p.push(Loaded { id, name: name.to_owned(), hooks: None });
-    id
+/// the API with it). [`attach`] completes it, [`forget`] drops it if the load fails. `None` if an
+/// attached plugin (or another library) has the name.
+pub fn reserve(name: &str) -> Option<PluginId> {
+    PLUGINS.0.borrow_mut().add(name, false)
 }
 
 /// The plugin loaded: its callbacks from now on.
 pub fn attach(id: PluginId, hooks: Rc<dyn PluginHooks>) {
-    if let Some(l) = PLUGINS.0.borrow_mut().iter_mut().find(|l| l.id == id) {
+    if let Some(l) = PLUGINS.0.borrow_mut().list.iter_mut().find(|l| l.id == id) {
         l.hooks = Some(hooks);
     }
 }
 
 /// The load failed: whatever the plugin registered goes (its commands then do nothing).
 pub fn forget(id: PluginId) {
-    PLUGINS.0.borrow_mut().retain(|l| l.id != id);
+    PLUGINS.0.borrow_mut().remove(id, false);
     host::forget(id);
     crate::bot_backend::forget_plugin(id);
 }
 
-/// The name (`<name>` of `tsmod_<name>`) of a plugin being loaded or loaded.
+/// `PluginApi::attach_plugin` (version 7): a new id for a plugin the server didn't load, `EXISTS`
+/// if a plugin has the name, `INVALID` for a bad one.
+pub fn attach_plugin(name: &str) -> PluginId {
+    if !loader::valid_name(name) {
+        return ts_plugin_api::INVALID;
+    }
+    PLUGINS.0.borrow_mut().add(name, true).unwrap_or(ts_plugin_api::EXISTS)
+}
+
+/// `PluginApi::detach_plugin` (version 7): an attached plugin gives its identity up. Its
+/// commands, listeners and bot backend go (an active backend hands over to native, its bots
+/// kicked: `bot_backend::drop_plugin`). False for an id that isn't attached.
+pub fn detach_plugin(id: PluginId) -> bool {
+    if id == ts_plugin_api::NO_PLUGIN || !PLUGINS.0.borrow_mut().remove(id, true) {
+        return false;
+    }
+    host::forget(id);
+    LISTENERS.0.borrow_mut().remove_owned(id);
+    crate::bot_backend::drop_plugin(id);
+    true
+}
+
+/// Whether `id` is an attached plugin's (version 7).
+pub fn is_attached(id: PluginId) -> bool {
+    id != ts_plugin_api::NO_PLUGIN && PLUGINS.0.borrow().list.iter().any(|l| l.id == id && l.attached)
+}
+
+/// The name (`<name>` of `tsmod_<name>`, or the attached name) of a plugin being loaded, loaded or
+/// attached.
 pub fn name_of(id: PluginId) -> Option<String> {
-    PLUGINS.0.borrow().iter().find(|l| l.id == id).map(|l| l.name.clone())
+    PLUGINS.0.borrow().list.iter().find(|l| l.id == id).map(|l| l.name.clone())
 }
 
 /// The loaded plugins' names, in load order.
 pub fn names() -> Vec<String> {
-    PLUGINS.0.borrow().iter().filter(|l| l.hooks.is_some()).map(|l| l.name.clone()).collect()
+    PLUGINS.0.borrow().list.iter().filter(|l| l.hooks.is_some()).map(|l| l.name.clone()).collect()
 }
 
 /// Listeners (version 5, `PluginApi::add_listener`): plugins the server didn't load (metamod
 /// plugins) that registered a descriptor, by handle.
 static LISTENERS: Global<RefCell<Listeners>> = Global(RefCell::new(Listeners { next: 1, list: Vec::new() }));
 
-/// The listeners in registration order, with their handles.
+/// A listener: its handle, its owner (version 7: `NO_PLUGIN` or an attached plugin) and callbacks.
+struct Listener {
+    handle: i32,
+    owner: PluginId,
+    hooks: Rc<dyn PluginHooks>,
+}
+
+/// The listeners in registration order.
 struct Listeners {
     next: i32,
-    list: Vec<(i32, Rc<dyn PluginHooks>)>,
+    list: Vec<Listener>,
 }
 
 impl Listeners {
-    fn add(&mut self, hooks: Rc<dyn PluginHooks>) -> i32 {
+    fn add(&mut self, owner: PluginId, hooks: Rc<dyn PluginHooks>) -> i32 {
         let h = self.next;
         self.next = h.checked_add(1).unwrap_or(1);
-        self.list.push((h, hooks));
+        self.list.push(Listener { handle: h, owner, hooks });
         h
     }
 
     fn remove(&mut self, handle: i32) -> bool {
         let before = self.list.len();
-        self.list.retain(|(h, _)| *h != handle);
+        self.list.retain(|l| l.handle != handle);
         self.list.len() != before
+    }
+
+    /// Drops the listeners of a detached plugin.
+    fn remove_owned(&mut self, owner: PluginId) {
+        self.list.retain(|l| l.owner != owner);
     }
 }
 
-/// Registers a listener: its handle (> 0). Installs the sound hook if it listens for sounds (a
-/// loaded plugin's is installed at `GameDLLInit`).
-pub fn add_listener(hooks: Rc<dyn PluginHooks>) -> i32 {
+/// Registers a listener for `owner` (`NO_PLUGIN` or an attached plugin): its handle (> 0), or
+/// `None` for another owner. Installs the sound hook if it listens for sounds (a loaded plugin's
+/// is installed at `GameDLLInit`).
+pub fn add_listener(owner: PluginId, hooks: Rc<dyn PluginHooks>) -> Option<i32> {
+    if owner != ts_plugin_api::NO_PLUGIN && !is_attached(owner) {
+        return None;
+    }
     if hooks.wants_sounds() {
         goldsrc::server::set_sound_hook(Some(sound));
     }
-    LISTENERS.0.borrow_mut().add(hooks)
+    Some(LISTENERS.0.borrow_mut().add(owner, hooks))
 }
 
 /// Unregisters a listener: false for a handle that isn't registered.
@@ -171,14 +242,14 @@ pub fn remove_listener(handle: i32) -> bool {
 /// The loaded plugins' callbacks, then the listeners', copied out so a callback may load,
 /// register or call back in.
 fn all() -> Vec<Rc<dyn PluginHooks>> {
-    let mut v: Vec<_> = PLUGINS.0.borrow().iter().filter_map(|l| l.hooks.clone()).collect();
-    v.extend(LISTENERS.0.borrow().list.iter().map(|(_, h)| h.clone()));
+    let mut v: Vec<_> = PLUGINS.0.borrow().list.iter().filter_map(|l| l.hooks.clone()).collect();
+    v.extend(LISTENERS.0.borrow().list.iter().map(|l| l.hooks.clone()));
     v
 }
 
-/// Whether any plugin is loaded or a listener registered.
+/// Whether any plugin is loaded or attached, or a listener registered.
 pub fn any() -> bool {
-    PLUGINS.0.borrow().iter().any(|l| l.hooks.is_some()) || !LISTENERS.0.borrow().list.is_empty()
+    PLUGINS.0.borrow().list.iter().any(|l| l.hooks.is_some() || l.attached) || !LISTENERS.0.borrow().list.is_empty()
 }
 
 fn each(f: impl Fn(&dyn PluginHooks)) {
@@ -371,8 +442,8 @@ pub fn kill_scored(victim: *mut edict_t, killer: *mut edict_t, kill: ts_plugin_a
 /// Whether anything listens for [`entity_touch`]. Asked on every touch, so it looks without
 /// copying the lists out.
 pub fn wants_entity_touch() -> bool {
-    PLUGINS.0.borrow().iter().any(|l| l.hooks.as_ref().is_some_and(|h| h.wants_entity_touch()))
-        || LISTENERS.0.borrow().list.iter().any(|(_, h)| h.wants_entity_touch())
+    PLUGINS.0.borrow().list.iter().any(|l| l.hooks.as_ref().is_some_and(|h| h.wants_entity_touch()))
+        || LISTENERS.0.borrow().list.iter().any(|l| l.hooks.wants_entity_touch())
 }
 
 /// Version 6: `DispatchTouch(e, other)` ran. When one of them is a bot (`FL_FAKECLIENT`), the
@@ -503,18 +574,111 @@ mod tests {
     #[test]
     fn listeners_get_handles_and_leave() {
         let mut l = Listeners { next: 1, list: Vec::new() };
-        let h = l.add(Rc::new(Quiet));
-        let h2 = l.add(melee(1.0, 1.0, true));
+        let h = l.add(0, Rc::new(Quiet));
+        let h2 = l.add(0, melee(1.0, 1.0, true));
         assert!(h > 0 && h2 > 0 && h != h2);
         assert!(l.remove(h2));
         assert!(!l.remove(h2), "already gone");
         assert!(!l.remove(99));
         assert_eq!(l.list.len(), 1);
-        let h3 = l.add(Rc::new(Quiet));
+        let h3 = l.add(0, Rc::new(Quiet));
         assert!(h3 != h && h3 != h2, "handles aren't reused");
         // After i32::MAX the count starts over at 1, never 0 or below.
         l.next = i32::MAX;
-        assert_eq!(l.add(Rc::new(Quiet)), i32::MAX);
+        assert_eq!(l.add(0, Rc::new(Quiet)), i32::MAX);
         assert_eq!(l.next, 1);
+    }
+
+    #[test]
+    fn a_detach_drops_the_owners_listeners_only() {
+        let mut l = Listeners { next: 1, list: Vec::new() };
+        let mine = l.add(7, Rc::new(Quiet));
+        let anon = l.add(0, Rc::new(Quiet));
+        let other = l.add(8, Rc::new(Quiet));
+        l.remove_owned(7);
+        let left: Vec<i32> = l.list.iter().map(|x| x.handle).collect();
+        assert_eq!(left, [anon, other]);
+        assert!(!l.remove(mine), "gone with its owner");
+    }
+
+    struct Bots(&'static str);
+    impl crate::bot_backend::BotBackend for Bots {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn add_bot(&self, _req: &crate::bot_backend::AddBot) -> Option<(*mut edict_t, Option<f32>)> {
+            None
+        }
+    }
+
+    /// Version 7 (#290), through the registries themselves (the only test that touches them, so
+    /// the test threads don't share them): an attached plugin has a name, a data directory and a
+    /// bot backend, owns listeners, and a detach takes all of it back.
+    #[test]
+    fn an_attached_plugin_owns_its_dir_backend_and_listeners_until_it_detaches() {
+        use crate::bot_backend;
+        use ts_plugin_api::{EXISTS, INVALID, NO_PLUGIN};
+        assert_eq!(attach_plugin("a b"), INVALID);
+        assert_eq!(attach_plugin(""), INVALID);
+        let id = attach_plugin("rcbot_amxx");
+        assert!(id > 0);
+        assert_eq!(attach_plugin("RCBOT_AMXX"), EXISTS);
+        assert_eq!(reserve("rcbot_amxx"), None, "a tsmod_rcbot_amxx library isn't loaded then");
+        assert!(is_attached(id) && !is_attached(NO_PLUGIN));
+        assert_eq!(name_of(id).as_deref(), Some("rcbot_amxx"));
+        assert_eq!(host::data_dir_of("ts", &name_of(id).unwrap()), std::path::Path::new("ts/tsmod/rcbot_amxx"));
+        assert_eq!(host::prefix(id), "[rcbot_amxx]");
+        assert!(names().is_empty(), "not a loaded plugin: no descriptor");
+        assert!(any(), "the frame is built for it");
+
+        // Its backend, registered before `GameDLLInit`'s native one: native still comes first.
+        assert_eq!(host::check_backend(id, "rcbot_amxx"), Ok(()));
+        assert_eq!(host::check_backend(NO_PLUGIN, "rcbot_amxx"), Err(INVALID));
+        assert!(bot_backend::register_plugin(id, Rc::new(Bots("rcbot_amxx"))));
+        assert!(!bot_backend::register_plugin(id, Rc::new(Bots("RCBot_AMXX"))), "taken");
+        assert!(bot_backend::register(Rc::new(crate::bots::backend::Native)));
+        assert_eq!(bot_backend::active().name(), bot_backend::NATIVE, "the default is native, not the first registered");
+        assert!(bot_backend::is_registered("rcbot_amxx"));
+
+        let mine = add_listener(id, Rc::new(Quiet)).unwrap();
+        let anon = add_listener(NO_PLUGIN, Rc::new(Quiet)).unwrap();
+        assert_eq!(add_listener(id + 100, Rc::new(Quiet)), None, "not attached");
+
+        assert!(detach_plugin(id));
+        assert!(!detach_plugin(id), "once");
+        assert!(!detach_plugin(NO_PLUGIN));
+        assert!(!is_attached(id) && name_of(id).is_none());
+        assert_eq!(host::prefix(id), "[plugin]");
+        assert_eq!(host::check_backend(id, "rcbot_amxx"), Err(INVALID), "a dead id registers nothing");
+        assert!(!bot_backend::is_registered("rcbot_amxx"), "its backend went with it");
+        assert!(bot_backend::is_registered(bot_backend::NATIVE));
+        assert!(!remove_listener(mine), "its listener went with it");
+        assert!(remove_listener(anon), "others' stay");
+        assert!(!any());
+
+        let again = attach_plugin("rcbot_amxx");
+        assert!(again > id, "a new id for the same name");
+        assert!(detach_plugin(again));
+    }
+
+    /// #291: a failed load's id isn't handed out again, and names are one plugin's.
+    #[test]
+    fn ids_are_never_reused_and_names_are_unique() {
+        let mut r = Registry { next: 1, list: Vec::new() };
+        let a = r.add("a", false).unwrap();
+        assert!(r.remove(a, false), "the load failed");
+        let b = r.add("b", false).unwrap();
+        assert_ne!(a, b, "the failed plugin may still call with its id");
+        let c = r.add("rcbot_amxx", true).unwrap();
+        assert!(c > b);
+        assert_eq!(r.add("RCBot_AMXX", false), None, "an attached name keeps a library out");
+        assert_eq!(r.add("B", true), None, "a loaded name can't be attached");
+        assert!(!r.remove(c, false), "not a loaded plugin");
+        assert!(!r.remove(b, true), "not an attached plugin");
+        assert!(r.remove(c, true), "detached");
+        let again = r.add("rcbot_amxx", true).unwrap();
+        assert!(again > c, "the name is free again, with a new id");
+        r.next = PluginId::MAX;
+        assert_eq!(r.add("last", true), None, "out of ids rather than wrapping to a used one");
     }
 }

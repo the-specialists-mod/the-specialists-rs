@@ -109,6 +109,8 @@ pub fn player_flags(info: &PlayerInfo, b: Body) -> c_int {
         | bit(b.observer != 0, player_flag::SPECTATOR)
         | bit(b.iuser4 & stunt_bits::PRONE != 0, player_flag::PRONE)
         | bit(b.iuser4 & stunt_bits::STUNTING != 0, player_flag::STUNTING)
+        | bit(info.kungfu != 0, player_flag::KUNG_FU)
+        | bit(info.superjump != 0, player_flag::SUPERJUMP)
 }
 
 /// The raw timers [`combat`] turns into end times.
@@ -229,7 +231,16 @@ pub fn players() -> Vec<PlayerSnapshot> {
 pub fn frame_info() -> FrameInfo {
     let (time, frametime, highest) = with_frame(|f| (f.built.unwrap_or(0.0), f.frametime, f.highest_edict));
     let s = super::world_info::game_state();
-    FrameInfo { time, frametime, highest_edict: highest, teamplay: s.teamplay, ctb: s.ctb, mode: s.mode, round: s.round }
+    FrameInfo {
+        time,
+        frametime,
+        highest_edict: highest,
+        teamplay: s.teamplay,
+        ctb: s.ctb,
+        mode: s.mode,
+        round: s.round,
+        team_scores: s.team_scores,
+    }
 }
 
 /// When a taken item shows again: its think, while hidden and scheduled; 0 when it is available
@@ -292,7 +303,7 @@ mod tests {
 
     #[test]
     fn flags_from_state_and_entvars() {
-        let info = PlayerInfo { joined: 1, alive: 1, is_bot: 1, has_flag: 1, ..PlayerInfo::default() };
+        let info = PlayerInfo { joined: 1, alive: 1, is_bot: 1, has_flag: 1, kungfu: 1, superjump: 1, ..PlayerInfo::default() };
         let b = Body {
             fl: (FL_ONGROUND | FL_DUCKING) as i32,
             movetype: MOVETYPE_FLY as i32,
@@ -302,7 +313,10 @@ mod tests {
         };
         let f = player_flags(&info, b);
         use player_flag::*;
-        assert_eq!(f, JOINED | ALIVE | BOT | ON_GROUND | DUCKING | ON_LADDER | IN_WATER | HAS_FLAG | PRONE | STUNTING);
+        assert_eq!(
+            f,
+            JOINED | ALIVE | BOT | ON_GROUND | DUCKING | ON_LADDER | IN_WATER | HAS_FLAG | PRONE | STUNTING | KUNG_FU | SUPERJUMP
+        );
         let none =
             player_flags(&PlayerInfo::default(), Body { waterlevel: 1, observer: 3, iuser4: stunt_bits::RECOVER, ..Body::default() });
         assert_eq!(none, SPECTATOR, "knee deep isn't in water; getting up isn't a stunt");

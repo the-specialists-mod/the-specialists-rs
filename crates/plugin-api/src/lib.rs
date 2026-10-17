@@ -16,8 +16,10 @@
 //! static [`PluginApi`] and writes 0 (`IFACE_OK`) to a non-NULL `return_code`; any other name
 //! (older versions' names included) returns NULL and 1 (`IFACE_FAILED`). Look the export up in
 //! the already loaded game library (metamod's `GINFO_REALDLL_FULLPATH`, then
-//! `dlopen(RTLD_NOLOAD)` / `GetModuleHandle`). Such a plugin has no [`PluginId`]: it passes
-//! [`NO_PLUGIN`] where one is asked for.
+//! `dlopen(RTLD_NOLOAD)` / `GetModuleHandle`). Such a plugin has no [`PluginId`] of its own: it
+//! passes [`NO_PLUGIN`] where one is asked for, or takes one with [`PluginApi::attach_plugin`]
+//! (version 7) and from then on is a plugin like a loaded one for its data directory, log prefix,
+//! commands, listeners and bot backend, until [`PluginApi::detach_plugin`].
 //!
 //! # Loading (`tsmod_*` libraries)
 //! At `GameDLLInit` the server loads every library in its own `dlls/` directory named
@@ -47,7 +49,10 @@
 //!   added what bot backends need to see and steer without guessing: [`PluginApi::run_cmd`]'s
 //!   view handling, server-side `msec` and [`BotCmdResult`], the per-frame [`PlayerSnapshot`]s,
 //!   [`ItemInfo`]s and [`FrameInfo`], the map keys the port doesn't keep
-//!   ([`PluginApi::entity_key`]), and the touch, damage, shot and pickup callbacks (§11).
+//!   ([`PluginApi::entity_key`]), and the touch, damage, shot and pickup callbacks (§11); version 7
+//!   added plugin identities for metamod plugins ([`PluginApi::attach_plugin`],
+//!   [`PluginApi::detach_plugin`], listeners they own), the kung-fu and superjump
+//!   [`player_flag`]s and [`FrameInfo::team_scores`] (§12).
 //!
 //! # Private data
 //! An edict's private data is the server's block, not a C++ object. Since version 5 the server
@@ -113,9 +118,9 @@ use core::ffi::{CStr, c_char, c_int, c_void};
 
 /// The `CreateInterface` name of the table. It carries the version, so a metamod plugin built for
 /// another version gets NULL.
-pub const INTERFACE_NAME: &CStr = c"TSRS_PluginApi006";
+pub const INTERFACE_NAME: &CStr = c"TSRS_PluginApi007";
 /// [`PluginApi::version`] of this definition (and what [`Plugin::api_version`] must be).
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 /// The entry point every `tsmod_*` library exports ([`LoadFn`]).
 pub const LOAD_SYMBOL: &CStr = c"TSRS_PluginLoad";
 /// The prefix of the libraries the server loads.
@@ -162,10 +167,12 @@ pub const FULL: c_int = -5;
 /// A name is already taken (a command, cvar or bot backend); nothing changed.
 pub const EXISTS: c_int = -6;
 
-/// A loaded plugin, as [`LoadInfo::id`] gives it: passed back to the functions that act for the
-/// plugin (its data directory, log prefix, commands, bot backend).
+/// A plugin, as [`LoadInfo::id`] or [`PluginApi::attach_plugin`] gives it: passed back to the
+/// functions that act for the plugin (its data directory, log prefix, commands, listeners, bot
+/// backend). Ids are never handed out twice in a process.
 pub type PluginId = c_int;
-/// The [`PluginId`] of a plugin the server didn't load (a metamod plugin using `CreateInterface`).
+/// The [`PluginId`] of a plugin without an identity (a metamod plugin using `CreateInterface` that
+/// didn't [`attach`](PluginApi::attach_plugin)).
 pub const NO_PLUGIN: PluginId = 0;
 
 /// Who the plugin is, given to [`LoadFn`].
@@ -862,6 +869,11 @@ pub mod player_flag {
     /// In a stunt: diving, flipping, rolling, on a wall, or ducked for one
     /// ([`stunt_bits::STUNTING`]).
     pub const STUNTING: c_int = 0x400;
+    /// Version 7: permanent kung fu and superjump picked up this life
+    /// ([`PlayerInfo::kungfu`](super::PlayerInfo::kungfu), [`PlayerInfo::superjump`](super::PlayerInfo::superjump)).
+    /// Kung fu in hand is [`PlayerSnapshot::weapon`](super::PlayerSnapshot::weapon) 0.
+    pub const KUNG_FU: c_int = 0x800;
+    pub const SUPERJUMP: c_int = 0x1000;
 }
 
 /// TS's stunt bits (`pev->iuser4`, [`PlayerSnapshot::stunt_bits`]; version 6). They are the
@@ -1009,6 +1021,8 @@ pub struct FrameInfo {
     pub ctb: c_int,
     pub mode: c_int,
     pub round: c_int,
+    /// Version 7: as [`GameState::team_scores`].
+    pub team_scores: [c_int; MAX_TEAMS],
 }
 
 /// A server command a plugin registered: `argv[0]` is the command name.
@@ -1029,10 +1043,12 @@ pub struct PluginApi {
     /// got it) and globals (`globalvars_t *`). Don't write to the table.
     pub engine_funcs: *const c_void,
     pub globals: *mut c_void,
-    /// Prints `msg` to the server console as `[tsmod_<name>] msg` ([`log`] level).
+    /// Prints `msg` to the server console as `[tsmod_<name>] msg` ([`log`] level); an attached
+    /// plugin's lines (version 7) as `[<name>] msg`, and [`NO_PLUGIN`]'s as `[plugin] msg`.
     pub log: unsafe extern "C" fn(plugin: PluginId, level: c_int, msg: *const c_char),
     /// The plugin's own data directory, `<gamedir>/tsmod/<name>/` with a trailing slash (created
-    /// on first use): waypoints, learned data, configs. [`INVALID`] for [`NO_PLUGIN`].
+    /// on first use): waypoints, learned data, configs. Loaded and attached plugins alike;
+    /// [`INVALID`] for [`NO_PLUGIN`] or an id that isn't (or no longer is) a plugin's.
     pub data_dir: unsafe extern "C" fn(plugin: PluginId, buf: *mut c_char, len: c_int) -> c_int,
     /// The current map's name.
     pub map_name: unsafe extern "C" fn(buf: *mut c_char, len: c_int) -> c_int,
@@ -1044,7 +1060,9 @@ pub struct PluginApi {
     /// the name is taken. NULL for a bad name.
     pub register_cvar: unsafe extern "C" fn(plugin: PluginId, name: *const c_char, value: *const c_char, flags: c_int) -> *mut c_void,
     /// Registers a bot backend under `name` (not `native`): [`OK`], [`EXISTS`] or [`INVALID`].
-    /// Only plugins the server loaded can.
+    /// Only plugins with an id can: loaded ones and (version 7) attached ones. A backend that
+    /// registers after the map start chose the map's backend, while `ts_bot_backend` names it and
+    /// native runs, takes over at once (as a map start would switch to it).
     pub register_bot_backend: unsafe extern "C" fn(plugin: PluginId, name: *const c_char, backend: *const BotBackend) -> c_int,
 
     // ---- players ------------------------------------------------------------------------------
@@ -1171,10 +1189,13 @@ pub struct PluginApi {
     /// Registers a [`Plugin`] descriptor's callbacks for a plugin the server didn't load (a
     /// metamod plugin; a `tsmod_*` library has its own descriptor). The server copies it and calls
     /// it from then on as it calls loaded plugins, after them, in registration order (callbacks of
-    /// events already past, such as `game_init`, only when they come round again). A handle (> 0)
-    /// for [`remove_listener`](Self::remove_listener), or [`INVALID`]: NULL, a `size` other than
-    /// `size_of::<Plugin>()`, or an `api_version` other than [`VERSION`].
-    pub add_listener: unsafe extern "C" fn(listener: *const Plugin) -> c_int,
+    /// events already past, such as `game_init`, only when they come round again). Version 7:
+    /// `plugin` is the owner, [`NO_PLUGIN`] or an attached plugin's id, whose
+    /// [`detach_plugin`](Self::detach_plugin) removes it. A handle (> 0) for
+    /// [`remove_listener`](Self::remove_listener), or [`INVALID`]: NULL, a `size` other than
+    /// `size_of::<Plugin>()`, an `api_version` other than [`VERSION`], or a `plugin` that isn't
+    /// [`NO_PLUGIN`] or attached.
+    pub add_listener: unsafe extern "C" fn(plugin: PluginId, listener: *const Plugin) -> c_int,
     /// Unregisters a listener: [`OK`], or [`INVALID`] for a handle that isn't registered.
     pub remove_listener: extern "C" fn(handle: c_int) -> c_int,
     /// Bytes of game entity `entity`'s private data (`pvPrivateData`), or [`NOT_PLAYER`] (not a
@@ -1199,6 +1220,27 @@ pub struct PluginApi {
     /// [`INVALID`] (a NULL key) or [`UNSUPPORTED`] (the entity wasn't given that key; read entvars
     /// fields from the edict).
     pub entity_key: unsafe extern "C" fn(entity: c_int, key: *const c_char, buf: *mut c_char, len: c_int) -> c_int,
+
+    // ---- version 7: plugin identities ---------------------------------------------------------------
+    /// Gives a plugin the server didn't load (a metamod plugin, an AMX Mod X module) an identity
+    /// under `name` (1 to 32 letters, digits, `_` or `-`, as `<name>` of `tsmod_<name>`): a new
+    /// [`PluginId`] (> 0, never handed out before) that works wherever a loaded plugin's does
+    /// (its [`data_dir`](Self::data_dir) `<gamedir>/tsmod/<name>/`, the [`log`](Self::log)
+    /// prefix, [`register_command`](Self::register_command), [`register_cvar`](Self::register_cvar),
+    /// [`register_bot_backend`](Self::register_bot_backend), [`create_bot`](Self::create_bot),
+    /// [`add_listener`](Self::add_listener)). [`EXISTS`] if a loaded or attached plugin has the
+    /// name (letter case ignored), [`INVALID`] for NULL or a bad name. Callable any time from the
+    /// engine's thread, also before `GameDLLInit` (metamod's `Meta_Attach`); a `tsmod_*` library
+    /// whose name an attached plugin took is then not loaded.
+    pub attach_plugin: unsafe extern "C" fn(name: *const c_char) -> PluginId,
+    /// Gives an attached plugin's identity up: its server commands do nothing from then on (the
+    /// engine keeps their names), its listeners are removed, and its bot backend is unregistered;
+    /// if that backend was active, it is deactivated, its bots are kicked and native takes over
+    /// (as a map start switching backends). Its cvars stay (the engine can't drop them), and so
+    /// does an entity hook it installed ([`ham_set_hook`](Self::ham_set_hook) is the server's).
+    /// The id is dead afterwards; the name is free to attach again (with a new id). [`OK`], or
+    /// [`INVALID`] for an id that isn't attached (a loaded plugin's included: those stay).
+    pub detach_plugin: extern "C" fn(plugin: PluginId) -> c_int,
 }
 
 #[cfg(test)]
@@ -1215,8 +1257,8 @@ mod tests {
 
     #[test]
     fn the_interface_name_carries_the_version() {
-        assert_eq!(VERSION, 6);
-        assert!(INTERFACE_NAME.to_bytes().ends_with(b"006"));
+        assert_eq!(VERSION, 7);
+        assert!(INTERFACE_NAME.to_bytes().ends_with(b"007"));
     }
 
     #[test]
@@ -1224,5 +1266,19 @@ mod tests {
         // `shared::ts::stunt`'s values: the airborne mask (0x10c10) plus duck, roll, climb, wall dive.
         assert_eq!(stunt_bits::STUNTING, 0x10c10 | 0x4 | 0x40000 | 0x20000 | 0x800000);
         assert_eq!(stunt_bits::STUNTING & (stunt_bits::PRONE | stunt_bits::RECOVER | stunt_bits::STEALTH_SHOES), 0);
+    }
+
+    #[test]
+    fn player_flags_are_distinct_bits() {
+        use player_flag::*;
+        let all = [JOINED, ALIVE, BOT, ON_GROUND, DUCKING, ON_LADDER, IN_WATER, HAS_FLAG, SPECTATOR, PRONE, STUNTING, KUNG_FU, SUPERJUMP];
+        let mut seen = 0;
+        for f in all {
+            assert_eq!(f.count_ones(), 1, "{f:#x}");
+            assert_eq!(seen & f, 0, "{f:#x} twice");
+            seen |= f;
+        }
+        // Version 7 appended its flags after version 6's.
+        assert_eq!((KUNG_FU, SUPERJUMP), (0x800, 0x1000));
     }
 }

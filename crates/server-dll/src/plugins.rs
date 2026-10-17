@@ -55,7 +55,8 @@ fn load(path: &Path, name: &str) -> Result<String, String> {
         Ok(f) => *f,
         Err(_) => return Err(format!("has no {} export", LOAD_SYMBOL.to_string_lossy())),
     };
-    let id = reg::reserve(name);
+    // Version 7: an attached plugin (a metamod plugin, at `Meta_Attach`) may have the name.
+    let id = reg::reserve(name).ok_or_else(|| format!("the plugin name \"{name}\" is taken"))?;
     let cname = CString::new(name).unwrap_or_default();
     let cpath = CString::new(path.to_string_lossy().into_owned()).unwrap_or_default();
     let info = LoadInfo { id, name: cname.as_ptr(), path: cpath.as_ptr() };
@@ -235,12 +236,13 @@ impl PluginHooks for Loaded {
 }
 
 /// `PluginApi::add_listener` after its pointer check: a metamod plugin's descriptor, called as a
-/// loaded plugin's is. `INVALID` for a wrong size or version.
-pub fn add_listener(desc: Plugin) -> c_int {
+/// loaded plugin's is, owned by `plugin` (version 7: `NO_PLUGIN` or an attached plugin). `INVALID`
+/// for a wrong size or version, or another owner.
+pub fn add_listener(plugin: PluginId, desc: Plugin) -> c_int {
     if desc.size as usize != size_of::<Plugin>() || desc.api_version != ts_plugin_api::VERSION {
         return ts_plugin_api::INVALID;
     }
-    reg::add_listener(Rc::new(Loaded { desc }))
+    reg::add_listener(plugin, Rc::new(Loaded { desc })).unwrap_or(ts_plugin_api::INVALID)
 }
 
 /// `PluginApi::register_bot_backend` after its pointer checks.

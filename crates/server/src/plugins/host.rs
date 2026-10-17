@@ -25,12 +25,18 @@ static COMMANDS: Global<RefCell<Vec<Registered>>> = Global(RefCell::new(Vec::new
 /// Names the engine already has from a plugin (a failed load keeps them, doing nothing).
 static ENGINE_NAMES: Global<RefCell<Vec<String>>> = Global(RefCell::new(Vec::new()));
 
-/// The log prefix of a plugin: `[tsmod_<name>]`, `[plugin]` for one the server didn't load.
+/// The log prefix of a plugin: `[tsmod_<name>]` for a loaded one, `[<name>]` for an attached one
+/// (version 7), `[plugin]` for `NO_PLUGIN` or an id that isn't a plugin's.
 pub fn prefix(plugin: PluginId) -> String {
     match super::name_of(plugin) {
-        Some(n) if plugin != NO_PLUGIN => format!("[tsmod_{n}]"),
+        Some(n) if plugin != NO_PLUGIN => prefix_for(&n, super::is_attached(plugin)),
         _ => "[plugin]".to_owned(),
     }
+}
+
+/// [`prefix`] of a plugin named `name`.
+pub fn prefix_for(name: &str, attached: bool) -> String {
+    if attached { format!("[{name}]") } else { format!("[tsmod_{name}]") }
 }
 
 /// The line `PluginApi::log` prints, or `None` when its level hides it (debug without
@@ -61,7 +67,7 @@ pub fn data_dir_of(game_dir: &str, name: &str) -> PathBuf {
 }
 
 /// `PluginApi::data_dir`: the directory with a trailing separator, created on first use, or
-/// `INVALID` for a plugin the server didn't load.
+/// `INVALID` for `NO_PLUGIN` or an id that isn't a loaded or attached plugin's.
 pub fn data_dir(plugin: PluginId) -> Result<String, i32> {
     let name = super::name_of(plugin).filter(|_| plugin != NO_PLUGIN).ok_or(INVALID)?;
     let dir = data_dir_of(&engine().game_dir(), &name);
@@ -114,15 +120,17 @@ pub fn register_cvar(name: &str, value: &str, flags: i32) -> *mut goldsrc::sys::
     c.cast_mut()
 }
 
-/// `register_bot_backend`'s checks: a plugin the server loaded, and a backend name (as a plugin
-/// name) other than `native`. `INVALID` otherwise; whether the name is free is the registry's.
+/// `register_bot_backend`'s checks: a plugin with an id (loaded, or attached since version 7), and
+/// a backend name (as a plugin name) other than `native`. `INVALID` otherwise; whether the name is
+/// free is the registry's.
 pub fn check_backend(plugin: PluginId, name: &str) -> Result<(), i32> {
     let loaded = plugin != NO_PLUGIN && super::name_of(plugin).is_some();
     let ok = loaded && super::loader::valid_name(name) && !name.eq_ignore_ascii_case(crate::bot_backend::NATIVE);
     ok.then_some(()).ok_or(INVALID)
 }
 
-/// Drops what a plugin that failed to load registered.
+/// Drops the commands of a plugin that failed to load, or detached (version 7): the engine keeps
+/// the names, which then do nothing (until a plugin registers them again).
 pub fn forget(plugin: PluginId) {
     COMMANDS.0.borrow_mut().retain(|c| c.plugin != plugin);
 }
@@ -149,6 +157,12 @@ mod tests {
         assert_eq!(log_line("[tsmod_x]", log::ERROR, "e", false).unwrap(), "[tsmod_x] error: e\n");
         assert_eq!(log_line("[tsmod_x]", log::DEBUG, "d", false), None);
         assert_eq!(log_line("[tsmod_x]", log::DEBUG, "d", true).unwrap(), "[tsmod_x] d\n");
+    }
+
+    #[test]
+    fn prefixes() {
+        assert_eq!(prefix_for("rcbot", false), "[tsmod_rcbot]");
+        assert_eq!(prefix_for("rcbot_amxx", true), "[rcbot_amxx]");
     }
 
     #[test]

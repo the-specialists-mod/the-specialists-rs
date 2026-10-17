@@ -112,7 +112,7 @@ lists match `ts_i386.so` and `mp.dll` (`implementation/stock-entities.md` §7.5)
   keeps its own server bone setup. There's no server-side bone maths in TS to port; hitboxes and
   studio traces use the engine's.
 * `CreateInterface`: mp.dll's tier1 factory has nothing registered, so TS reports `IFACE_FAILED`
-  and returns NULL. The port's answers one name, `TSRS_PluginApi006` (version 6), with the plugin
+  and returns NULL. The port's answers one name, `TSRS_PluginApi007` (version 7), with the plugin
   API table (`ts-plugin-api`, `ts_server::plugin_api`; `implementation/plugin-api.md`), and is
   exported on every platform: on Linux it is the one export `ts_i386.so` doesn't have (port
   addition). The table carries entity hooks (`ts_server::ham`, below), since version 4 also on

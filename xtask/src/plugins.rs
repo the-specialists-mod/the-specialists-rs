@@ -34,8 +34,9 @@ fn other_arch(t: &Target) -> Target {
 const FIXTURES: [&str; 7] = ["test_badver", "test_badsize", "test_refuse", "noexport", "wrongarch", "junk", "otherplat"];
 
 /// The plugin checks the stub logs as `[tsmod_test] check <what> ok`. From `add_listener` on:
-/// plugin API version 5 (#198); from `players_count` on, version 6.
-pub const CHECKS: [&str; 49] = [
+/// plugin API version 5 (#198); from `players_count` on, version 6; from `attach_plugin` on,
+/// version 7 (#290).
+pub const CHECKS: [&str; 52] = [
     "data_dir",
     "map_name",
     "create_bot",
@@ -85,6 +86,9 @@ pub const CHECKS: [&str; 49] = [
     "damage",
     "weapon_fired",
     "item_pickup",
+    "attach_plugin",
+    "detach_plugin",
+    "snapshot_powers",
 ];
 
 /// Removes every `tsmod_*` file xtask may have put in `dlls/` (a run that was cut short).
@@ -278,7 +282,7 @@ mod tests {
         let mut log = String::from("[ts] GameInit: x\n[ts] bots: backend test: reloading ts_dojo\n[ts] bots: backend test\n");
         for l in [
             "loaded tsmod_test_amd64.so (tsmod_test 1)",
-            "tsmod_test_badver_amd64.so: built for plugin API version 7, this server has version 6, skipped",
+            "tsmod_test_badver_amd64.so: built for plugin API version 8, this server has version 7, skipped",
             "tsmod_test_badsize_amd64.so: its plugin descriptor is 8 bytes, skipped",
             "tsmod_test_refuse_amd64.so: its TSRS_PluginLoad refused to load (-2), skipped",
             "tsmod_noexport_amd64.so: has no TSRS_PluginLoad export, skipped",

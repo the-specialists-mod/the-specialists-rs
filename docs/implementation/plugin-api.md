@@ -14,10 +14,10 @@ of plugin use it:
   from their `TSRS_PluginLoad` and hand back callbacks. Bot backends are such plugins
   ([bot-plugins.md](bot-plugins.md)).
 
-The current version is **6** (for bot backends: tsmod-rcbot-rs's needs; version 5 was
-tsmod-amxx-rs#8 and #10, version 4 #117 and #99, version 3 #104). Versions don't stay
-compatible: a break bumps `VERSION` and the interface name, so a stale plugin finds nothing (§8,
-§9, §10, §11).
+The current version is **7** (#290: plugin identities for metamod plugins, so an AMX Mod
+X-hosted bot can be a backend; version 6 was tsmod-rcbot-rs's needs, version 5 tsmod-amxx-rs#8
+and #10, version 4 #117 and #99, version 3 #104). Versions don't stay compatible: a break bumps
+`VERSION` and the interface name, so a stale plugin finds nothing (§8, §9, §10, §11, §12).
 
 | Part | Where |
 |---|---|
@@ -26,6 +26,7 @@ compatible: a break bumps `VERSION` and the interface name, so a stale plugin fi
 | The logic: argument checks, deferral, snapshots | `crates/server/src/plugin_api.rs` (tests in `plugin_api/tests.rs`); bots `plugin_api/bots.rs`; entities and game state `plugin_api/world_info.rs` |
 | The `tsmod_*` loader: naming rule, header check, descriptor checks | `crates/server/src/plugins/loader.rs` (pure, unit tested); opening the library and calling it: `crates/server-dll/src/plugins.rs` |
 | Plugin callbacks (when they run), log, data directory, commands, cvars | `crates/server/src/plugins/mod.rs`, `plugins/host.rs` |
+| Plugin ids, attached plugins and listener owners (version 7, §1.4) | `crates/server/src/plugins/mod.rs` (`Registry`, `attach_plugin`, `detach_plugin`); their backends `crates/server/src/bot_backend/mod.rs` (`register_plugin`, `drop_plugin`) |
 | The stub plugin | `crates/tsmod-test` (`cargo xtask plugins`) |
 | Power-up runs, time scale, `TSSlowMo` override | `crates/server/src/rules/powerup.rs` |
 | Free slots, weapon ammo | `crates/server/src/weapons/mod.rs` |
@@ -48,17 +49,17 @@ compatible: a break bumps `VERSION` and the interface name, so a stale plugin fi
 
 The server library exports tier1's `CreateInterface(name, return_code)` on every platform.
 `mp.dll` always had it, with nothing registered (0x10028f70). On Linux it is the one export the
-port adds to `ts_i386.so`'s list (`stock-entities.md` §7.5). With `TSRS_PluginApi006`
+port adds to `ts_i386.so`'s list (`stock-entities.md` §7.5). With `TSRS_PluginApi007`
 (`ts_plugin_api::INTERFACE_NAME`) it returns a pointer to the `PluginApi` and writes 0
-(`IFACE_OK`) to a non-NULL `return_code`. Any other name, the earlier versions' `TSRS_PluginApi001`,
-`TSRS_PluginApi003`, `TSRS_PluginApi004` and `TSRS_PluginApi005` included, or a NULL name, returns
-NULL and writes 1 (`IFACE_FAILED`).
+(`IFACE_OK`) to a non-NULL `return_code`. Any other name, the earlier versions' `TSRS_PluginApi001`
+to `TSRS_PluginApi006` included, or a NULL name, returns NULL and writes 1 (`IFACE_FAILED`).
 
 A plugin looks the export up in the game library that is already loaded: metamod's
 `GINFO_REALDLL_FULLPATH`, then `dlopen(RTLD_NOLOAD)` / `GetModuleHandle`. It checks
-`PluginApi::version` (6) and `size`. Such a plugin has no plugin id: it passes `NO_PLUGIN` (0)
-where one is asked, so it can't use `data_dir`, `register_bot_backend` or `create_bot`. Since
-version 5 it can register a `Plugin` descriptor as a **listener** (`add_listener`, §1.3) to get the
+`PluginApi::version` (7) and `size`. Such a plugin has no plugin id of its own: it passes
+`NO_PLUGIN` (0) where one is asked, and then can't use `data_dir`, `register_bot_backend` or
+`create_bot`, unless it takes an identity with `attach_plugin` (version 7, §1.4). Since version 5
+it can register a `Plugin` descriptor as a **listener** (`add_listener`, §1.3) to get the
 callbacks a loaded plugin gets.
 
 The table is built on first use after `GiveFnptrsToDll` (it carries the engine's table and
@@ -179,16 +180,49 @@ slots):
   random one re-rolls) or a dropped gun (`CTSWorldGun::GetWeapon`), with the `entity_info` kind and
   the weapon id or power-up bits. A temporary power-up or dropped gun is removed by then.
 
-**Listeners** (version 5): `add_listener(&Plugin)` registers a descriptor for a plugin the server
-didn't load (a metamod plugin, such as `tsmod-amxx-rs`'s tsx). The server checks its `size` and
-`api_version`, copies it and calls it like a loaded plugin's, after the loaded plugins, in
+**Listeners** (version 5): `add_listener(plugin, &Plugin)` registers a descriptor for a plugin the
+server didn't load (a metamod plugin, such as `tsmod-amxx-rs`'s tsx). The server checks its `size`
+and `api_version`, copies it and calls it like a loaded plugin's, after the loaded plugins, in
 registration order, until `remove_listener(handle)`. Events already past (`game_init`, a map's
-`precache`) are called when they come round again.
+`precache`) are called when they come round again. Version 7 adds the first argument, the
+listener's owner: `NO_PLUGIN`, or an attached plugin's id (§1.4), whose `detach_plugin` removes it;
+any other id is `INVALID`.
 
 The player callbacks the game reaches inside a player's own dispatch (spawn, damage, death,
 kill, stunt, power-up) are **deferred** until every player they name is back in its slot
 (`world::defer`), so a callback can use the whole API on them. The others run at once; `sound`
 can run inside another entity's call (the API's snapshot rules apply).
+
+### 1.4 Attached plugins (version 7)
+
+A metamod plugin (an AMX Mod X module, at `Meta_Attach` / `AMXX_Attach`) takes a plugin identity
+with `attach_plugin(name)`, so it can own a data directory and a bot backend as a `tsmod_*`
+library does. This is what lets an AMX Mod X-hosted bot (a Pawn plugin on Rust AMXX modules,
+`the-specialists-mod/tsmod-amxx-rcbot`) be `ts_bot_backend rcbot_amxx`.
+
+* **The name** follows `tsmod_<name>`'s rule (`loader::valid_name`: 1 to 32 letters, digits, `_`,
+  `-`). `INVALID` for NULL, a bad name or one that isn't UTF-8; `EXISTS` when a loaded or attached
+  plugin has it, letter case ignored (the data directory's name; Windows file names). A `tsmod_*`
+  library whose name an attached plugin took first is skipped with a warning ("the plugin name
+  ... is taken"), as metamod plugins attach before `GameDLLInit` loads the libraries.
+* **The id** (> 0) comes from the same counter as loaded plugins' and is never handed out again
+  (#291), also after a detach or a failed load. It works wherever a loaded plugin's does:
+  `data_dir` (`<gamedir>/tsmod/<name>/`, the same scheme, `host::data_dir_of`), `log` (prefix
+  `[<name>]`, a loaded plugin's being `[tsmod_<name>]`), `register_command`, `register_cvar`,
+  `register_bot_backend`, `create_bot` (when its backend is the active one), `add_listener`'s owner.
+* **When**: any time on the engine's thread, also before `GameDLLInit` (metamod calls the game's
+  `GiveFnptrsToDll` before it attaches its plugins, so the engine's functions are there). A
+  backend registered that early doesn't become the default: native is put first whenever it
+  registers (`bot_backend::add`).
+* **`detach_plugin(id)`** gives the identity up: `OK`, or `INVALID` for an id that isn't attached
+  (`NO_PLUGIN`, a loaded plugin's, which stay for the process, or one already detached). Its server
+  commands do nothing from then on (the engine keeps the names, as for a failed load); its
+  listeners are removed; its bot backend is unregistered, and if it was the active one it is
+  deactivated, the bots it made are kicked and native is activated at once, as a map start
+  switching backends (`bot_backend::drop_plugin`). `ts_bot_backend` may still name it: that then
+  resolves to native (warned once), so the map isn't reloaded for it. Its cvars stay (the engine
+  can't drop one) and so does an entity hook it installed (`ham_set_hook` is server-wide). The
+  name is free again; a new attach gets a new id.
 
 ## 2. Rules: snapshots and deferral
 
@@ -240,12 +274,12 @@ Addresses are `ts_i386.so` (Ghidra numbering). "pl+" offsets are `CBasePlayer` f
 | Function | Port state and behaviour |
 |---|---|
 | `engine_funcs`, `globals` | The engine's `enginefuncs_t` (the FWGS headers' layout; the server's copy, don't write it) and `globalvars_t`. Traces, PVS, beams, menus, entity searches go straight to the engine. |
-| `log(plugin, level, msg)` | `[tsmod_<name>] msg` on the console; `warning:` / `error:` tags; debug only with `developer`. |
-| `data_dir(plugin, buf, len)` | `<gamedir>/tsmod/<name>/` (trailing separator), created on first use. `INVALID` for `NO_PLUGIN`. Strings out: NUL-terminated, cut to fit, the full length returned. |
+| `log(plugin, level, msg)` | `[tsmod_<name>] msg` on the console (an attached plugin's `[<name>]`, `NO_PLUGIN`'s `[plugin]`); `warning:` / `error:` tags; debug only with `developer`. |
+| `data_dir(plugin, buf, len)` | `<gamedir>/tsmod/<name>/` (trailing separator), created on first use, for loaded and attached plugins. `INVALID` for `NO_PLUGIN` or a dead id. Strings out: NUL-terminated, cut to fit, the full length returned. |
 | `map_name(buf, len)` | `gpGlobals->mapname`. |
 | `register_command(plugin, name, f)` | A server command; `f(argc, argv)`. One trampoline is registered with the engine per name and finds the callback by `argv[0]`. `EXISTS` if a plugin has it; the engine warns about its own names. |
 | `register_cvar(plugin, name, value, flags)` | `pfnCVarRegister` of a leaked `cvar_t`, or the existing one; returns the `cvar_t *`. |
-| `register_bot_backend(plugin, name, backend)` | Only loaded plugins; a plugin name, not `native`; `EXISTS` if taken. [bot-plugins.md](bot-plugins.md). |
+| `register_bot_backend(plugin, name, backend)` | Only plugins with an id (loaded; attached since version 7); a plugin name, not `native`; `EXISTS` if taken. One registered after the map start chose the map's backend takes over at once when `ts_bot_backend` names it and native runs. [bot-plugins.md](bot-plugins.md) §2.1. |
 | `player_info` | As in §3, plus `alive` (alive and not observing), `is_bot` (`m_bIsBot`, any backend), `team` (the rules team from 1 in teamplay, 0 none) and `has_flag` (carries the CTB case). |
 | `player_inventory(player, out, max)` | Every owned weapon id 1..37: clip, the reserve of its ammo type, fire mode, owned attachments. Returns the count. Snapshot like `player_info` when the player is out of reach. |
 | `entity_info(entity, out)` | By the object's Rust type (`world::type_of`): player (team, `available` = alive), `GROUND_WEAPON` (`ts_groundweapon` and the HL names: TS id), `POWERUP` (bits), `GUN` (a dropped `WorldGun` with its id and dropper/thrower, or a `weapon_tsgun` and its holder, and since version 4 the holder's weapon in hand as `weapon`), `CTB_FLAG` (`ts_flag`, its team), `CTB_BASE` (`ts_briefcase`: capture team, `available` = captures accepted), `OBJECTIVE` (`ts_wingiver`, `ts_scoregiver`), `PROJECTILE` (thrower known), else `OTHER` (with `projectile_owner`'s owner). `available` is "not `EF_NODRAW`" unless said otherwise. This replaces RCBot's classname guesses and its `Classify()` virtual call. |
@@ -258,9 +292,9 @@ Addresses are `ts_i386.so` (Ghidra numbering). "pl+" offsets are `CBasePlayer` f
 | `create_bot(plugin, name, model, skill)` | Only for the active backend's plugin. The host's `BotSetup` (`bot_backend::create_player`): fake client, `Player` with `cbot`/`is_bot`, spawn, `model`/`team`/`cl_lw` keys, teamplay team from the model, `ts_playeramount`. Index, `FULL` or `INVALID`. `name` and `model` are NUL-terminated byte strings, not UTF-8: they become the netname, the keys and the team unconverted, as TS's `strcpy`s (`BotCreate` 0x1006b7c0 / `BotCreateCustom` 0x1006b590 in Windows `mp.dll`), so pass on `add_bot`'s strings as they came (a CP1252 0xE9 stays 0xE9; #190). |
 | `kick_bot(player)` | `kick #<userid>` (queued). `INVALID` for a human. |
 | `run_cmd(player, cmd, out)` | `pfnRunPlayerMove`. `BUSY` inside the bot's own callbacks; `INVALID` for a human, `msec` outside 0..255, an impulse outside 0..255, an unknown flag or a float that isn't finite. `ts_bot_stop 1` clears a living bot's movement, buttons and impulse (it still turns), as the native frozen think. Version 6 (`BotCmd::flags`): `SET_VIEW` writes `v_angle` and `angles` (pitch × -1/3, no roll) and clears `fixangle` before the move, as the native bots' `UpdateView` (0x1006e500) does. A fake client never gets the network update that clears `fixangle`, so without it a bot keeps its spawn's view for good. When the game had set `fixangle` (a spawn, a teleport, `ts_tp`), its angles (`pev->angles`, what `svc_setangle` sends a client) win for that command. `AUTO_MSEC` (or `msec` 0) runs `gpGlobals->frametime` in whole milliseconds, 1..255, carrying the fraction to the bot's next command. Afterwards the server puts `gpGlobals->time` and `frametime` back (FWGS's `SV_RunCmd` leaves them at `sv.time + frametime` and the command's length, `sv_pmove.c`) and fills `out` (`BotCmdResult`, may be NULL): `v_angle` (the game's while `fixangle` is set), origin, velocity, the `msec` used, and events `TELEPORTED` (moved farther than its speed allows: during the command, or between commands, when only a pusher moves a player), `FIXANGLE` (set before or during the command) and `LANDED` (in the air before, on the ground after). |
-| `players(out, max)` | Version 6. Slot 1..`max` as `PlayerSnapshot`s; returns `maxClients`. Built once a frame at `StartFrame` before the plugins' `start_frame` (`plugin_api::frame::begin`), when every player is in its slot: the user id (0 empty), `player_flag` bits (joined, alive, bot, `FL_ONGROUND`, `FL_DUCKING`, ladder = `MOVETYPE_FLY`, water = `waterlevel` ≥ 2, the case, observing = `iuser1`, prone and stunting from the `iuser4` stunt bits), team, the entvars vectors, health, armour, buttons, `player_info`'s weapon, stance, power-up and time-scale fields, the raw stunt bits, frags, deaths, free slots, an inventory serial (+1 whenever `player_inventory`'s list changes) and a `CombatState`: the kung-fu bar (`pl+0x774`) and the game times at which the next attack (`m_flNextAttack` / the gun's primary delay, which a kung-fu move sets), the stunt cooldown, the recovery (`CTSStunt` or `BlockPlayer`), the prone lock, the slow-motion dodge, the kung-fu / knife / katana blocks (`pl+0x7a8..`) and the delayed hit (`pl+0x79c`) run out, 0 for none. TS 3.0 keeps those as seconds left of the player's time, TS 2.1 as end times; the ruleset's `StuntClock::ends_at` converts. |
+| `players(out, max)` | Version 6. Slot 1..`max` as `PlayerSnapshot`s; returns `maxClients`. Built once a frame at `StartFrame` before the plugins' `start_frame` (`plugin_api::frame::begin`), when every player is in its slot: the user id (0 empty), `player_flag` bits (joined, alive, bot, `FL_ONGROUND`, `FL_DUCKING`, ladder = `MOVETYPE_FLY`, water = `waterlevel` ≥ 2, the case, observing = `iuser1`, prone and stunting from the `iuser4` stunt bits; version 7: `KUNG_FU` and `SUPERJUMP`, the permanent power-ups `player_info` reports as `kungfu` / `superjump`; kung fu in hand is `weapon` 0), team, the entvars vectors, health, armour, buttons, `player_info`'s weapon, stance, power-up and time-scale fields, the raw stunt bits, frags, deaths, free slots, an inventory serial (+1 whenever `player_inventory`'s list changes) and a `CombatState`: the kung-fu bar (`pl+0x774`) and the game times at which the next attack (`m_flNextAttack` / the gun's primary delay, which a kung-fu move sets), the stunt cooldown, the recovery (`CTSStunt` or `BlockPlayer`), the prone lock, the slow-motion dodge, the kung-fu / knife / katana blocks (`pl+0x7a8..`) and the delayed hit (`pl+0x79c`) run out, 0 for none. TS 3.0 keeps those as seconds left of the player's time, TS 2.1 as end times; the ruleset's `StuntClock::ends_at` converts. |
 | `items(out, max)` | Version 6. Every `ts_groundweapon` (and the HL names), `ts_powerup` and dropped gun (`CTSWorldGun`) in index order, taken ones too: index, serial number, `entity_info`'s kind, weapon, power-up bits and `available`, origin, and `respawn_at` (a hidden item's scheduled think; 0 when available, or when a round mode keeps it for `RespawnEntities`). Returns the count. |
-| `frame_info(out)` | Version 6. The frame's time and frame time (at `StartFrame`), the highest entity index in use, and `game_state`'s teamplay, CTB, mode and round. |
+| `frame_info(out)` | Version 6. The frame's time and frame time (at `StartFrame`), the highest entity index in use, and `game_state`'s teamplay, CTB, mode and round; version 7 its `team_scores` too (a bot's fitness reads them, which took a `game_state` call before). |
 | `entity_key(entity, key, buf, len)` | Version 6. A map key the entity was given (by the map or `entity_key_value`) that the `entvars_t` table doesn't take, such as `master`, `wait` or `tsweaponid`: the port's classes parse those into their objects or drop them, so `entities::dispatch_key_value` records them by index and serial number (`plugin_api/keys.rs`) and freeing the entity forgets them. The last value given wins; an exact match before one ignoring ASCII case. The bytes as given. `UNSUPPORTED` for a key it wasn't given (an entvars key: read the edict), `NOT_PLAYER`, `INVALID` for a NULL key. RCBot fills its masters list from it. |
 | `bot_command(player, line)` | `commands::run` with the line tokenized as the engine does (quotes group): plugins' `client_command`, then the game's commands, as if typed. `DEFERRED` when out of reach. |
 | `select_weapon(player, id)` | `weapon_<id>` (`CmdStart` ignores `weaponselect` in TS 3.0, which is why RCBot never switched). `INVALID` if not owned. |
@@ -381,9 +415,27 @@ block's size and layout don't matter to them.
   `DamageEvent`'s hit is the victim's last `TraceAttack` in the same frame: a refused trace (a
   team mate) followed by a direct damage in that frame would lend its hitgroup to that damage.
   `entity_key` keeps only the keys that aren't entvars fields.
+* Version 7: a detached plugin's commands and cvars stay registered with the engine (doing
+  nothing, and keeping their values): GoldSrc can't remove either. A backend that registers late
+  takes over only from native; while another plugin backend runs, the map reload (`reload.rs`)
+  decides as for any `ts_bot_backend` change.
 * Entity hooks: §7.6.
 
 ## 6. Tests
+
+* Version 7 (`cargo test`): the interface name (`006` refused), the `player_flag` bits distinct
+  (`ts-plugin-api`); the registry: ids never reused after a failed load or a detach (#291),
+  names unique across loaded and attached plugins, letter case ignored; an attached plugin's name,
+  data directory, log prefix, backend (registered before native, which still comes first) and
+  listeners, all gone after `detach_plugin`, and a new id for a second attach
+  (`plugins::tests`); a listener's owner (`a_detach_drops_the_owners_listeners_only`); when a late
+  backend takes over (`bot_backend::tests::a_late_backend_takes_over_native_only`); the snapshot's
+  kung-fu and superjump flags (`plugin_api::frame`). `cargo xtask plugins` runs the stub's version
+  7 checks (bot-plugins.md §6): `attach_plugin` (the name rules, `EXISTS` for its own loaded name,
+  its data directory, a command, a backend and an owned listener), `detach_plugin` (the id dead
+  for `data_dir` and `register_bot_backend`, the listener gone, a loaded plugin's id refused, a
+  new id after) and `snapshot_powers` (the flags against `player_info`), and `frame_info`'s team
+  scores against `game_state`.
 
 * Version 6 (`cargo test`): the interface name (`005` refused), the `stunt_bits` behind
   `STUNTING`; `run_cmd`'s argument checks (flags, `msec` 0), `AUTO_MSEC`'s carry (60 frames of
@@ -742,3 +794,19 @@ unchanged:
 | `Plugin::sound(entity, origin, sample, volume, attenuation)` | adds `channel` and `source_player` |
 | `game_state`'s `ctb`: searched on every call | found once per map at `ServerActivate` |
 | — | new, last in `Plugin`: `entity_touch`, `weapon_fired`, `item_pickup`; last in the table: `players` (`PlayerSnapshot`, `CombatState`, `player_flag`, `stunt_bits`), `items` (`ItemInfo`), `frame_info` (`FrameInfo`), `entity_key` |
+
+## 12. Version 6 → 7
+
+Version 7 (#290) is a break for metamod plugins: `CreateInterface` answers only
+`TSRS_PluginApi007` and `Plugin::api_version` must be 7. Every version-6 entry not named here is
+unchanged:
+
+| Version 6 | Version 7 |
+|---|---|
+| `TSRS_PluginApi006`, `version` 6 | `TSRS_PluginApi007`, `version` 7 |
+| `add_listener(listener)` | `add_listener(plugin, listener)`: the owner, `NO_PLUGIN` or an attached plugin (§1.3) |
+| a `CreateInterface` caller has no id | new, last in the table: `attach_plugin(name) -> PluginId`, `detach_plugin(plugin) -> c_int` (§1.4) |
+| `register_bot_backend`, `data_dir`: loaded plugins only | attached plugins too; a backend registered after the map's selection takes over from native when `ts_bot_backend` names it |
+| `player_flag` ends with `STUNTING` (0x400) | adds `KUNG_FU` (0x800) and `SUPERJUMP` (0x1000) |
+| `FrameInfo` ends with `round` | adds `team_scores[4]` |
+| plugin ids: the survivors' highest + 1 | a process-wide counter (#291) |

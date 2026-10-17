@@ -92,6 +92,8 @@ fn build((funcs, globals): (*const goldsrc::sys::enginefuncs_t, *mut goldsrc::sy
         items,
         frame_info,
         entity_key,
+        attach_plugin,
+        detach_plugin,
     }
 }
 
@@ -479,7 +481,7 @@ unsafe extern "C" fn ham_execute(call: *mut HamCall, run_hooks: c_int) -> c_int 
 
 /// Guard: NULL is `INVALID`, and so is a descriptor whose `size` isn't this version's (only `size`
 /// is read then).
-unsafe extern "C" fn add_listener(listener: *const ts_plugin_api::Plugin) -> c_int {
+unsafe extern "C" fn add_listener(plugin: PluginId, listener: *const ts_plugin_api::Plugin) -> c_int {
     if listener.is_null() {
         return INVALID;
     }
@@ -492,7 +494,7 @@ unsafe extern "C" fn add_listener(listener: *const ts_plugin_api::Plugin) -> c_i
     // SAFETY: as above; `size_of::<Plugin>()` bytes are readable. Its callbacks are the plugin's,
     // callable on the engine's thread until it removes the listener (the table's contract).
     let desc = unsafe { listener.read_unaligned() };
-    crate::plugins::add_listener(desc)
+    crate::plugins::add_listener(plugin, desc)
 }
 
 extern "C" fn remove_listener(handle: c_int) -> c_int {
@@ -548,4 +550,17 @@ unsafe extern "C" fn entity_key(entity: c_int, key: *const c_char, buf: *mut c_c
         Ok(v) => unsafe { put_bytes(buf, len, v.as_bytes()) },
         Err(code) => code,
     }
+}
+
+// ---- version 7: plugin identities ------------------------------------------------------------------
+
+/// Guard: NULL and a name that isn't UTF-8 are `INVALID` (a valid name is ASCII).
+unsafe extern "C" fn attach_plugin(name: *const c_char) -> PluginId {
+    // SAFETY: the table's contract for string arguments.
+    let Some(name) = (unsafe { arg(name) }).and_then(|n| n.to_str().ok()) else { return INVALID };
+    ts_server::plugins::attach_plugin(name)
+}
+
+extern "C" fn detach_plugin(plugin: PluginId) -> c_int {
+    if ts_server::plugins::detach_plugin(plugin) { OK } else { INVALID }
 }

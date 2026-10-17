@@ -120,69 +120,114 @@ pub trait BotBackend {
 pub struct PluginBot;
 
 struct Registry {
-    backends: Vec<Rc<dyn BotBackend>>,
+    /// The backends, native first, each with the plugin that registered it (`None`: native).
+    backends: Vec<(Rc<dyn BotBackend>, Option<ts_plugin_api::PluginId>)>,
     active: Option<Rc<dyn BotBackend>>,
     /// `ts_bot_backend` values already warned about.
     warned: Vec<String>,
     /// Which backend made each bot still around, by user id.
     owners: BTreeMap<i32, String>,
-    /// The plugin that registered each plugin backend (by its index in `backends`).
-    plugins: BTreeMap<usize, ts_plugin_api::PluginId>,
+    /// A map start chose the map's backend ([`map_start`]): a backend registered from now on may
+    /// take over at once ([`register_plugin`]).
+    started: bool,
 }
 
-static REGISTRY: Global<RefCell<Registry>> = Global(RefCell::new(Registry {
-    backends: Vec::new(),
-    active: None,
-    warned: Vec::new(),
-    owners: BTreeMap::new(),
-    plugins: BTreeMap::new(),
-}));
+static REGISTRY: Global<RefCell<Registry>> =
+    Global(RefCell::new(Registry { backends: Vec::new(), active: None, warned: Vec::new(), owners: BTreeMap::new(), started: false }));
+
+/// Adds `b` for `plugin`: false if the name is taken (case-insensitive, `native` included). The
+/// native backend goes first whenever it registers: an attached plugin (version 7) can register
+/// before `GameDLLInit` does (metamod's `Meta_Attach`), and the first backend is the default.
+fn add(b: Rc<dyn BotBackend>, plugin: Option<ts_plugin_api::PluginId>) -> bool {
+    let mut r = REGISTRY.0.borrow_mut();
+    if r.backends.iter().any(|(x, _)| x.name().eq_ignore_ascii_case(b.name())) {
+        return false;
+    }
+    if plugin.is_none() && b.name() == NATIVE {
+        r.backends.insert(0, (b, None));
+    } else {
+        r.backends.push((b, plugin));
+    }
+    true
+}
 
 /// Registers a backend (the native one at `GameDLLInit`). False if the name is taken
 /// (case-insensitive, `native` included).
 pub fn register(b: Rc<dyn BotBackend>) -> bool {
-    let mut r = REGISTRY.0.borrow_mut();
-    if r.backends.iter().any(|x| x.name().eq_ignore_ascii_case(b.name())) {
+    add(b, None)
+}
+
+/// Registers a plugin's backend (`PluginApi::register_bot_backend`), as [`register`]. Version 7:
+/// one registered after this map's start (an AMX Mod X plugin's `plugin_init`, which runs in
+/// `ServerActivate`) takes over now if `ts_bot_backend` names it and the map runs native, as the
+/// map start would have chosen it ([`late_switch`]); without that the map would be reloaded for
+/// it (`crate::reload`).
+pub fn register_plugin(plugin: ts_plugin_api::PluginId, b: Rc<dyn BotBackend>) -> bool {
+    let name = b.name().to_owned();
+    if !add(b, Some(plugin)) {
         return false;
     }
-    r.backends.push(b);
+    let started = REGISTRY.0.borrow().started;
+    if started {
+        let (wanted, running) = (wanted(), active());
+        if late_switch(started, running.name(), wanted.name(), &name) {
+            switch_to(wanted);
+        }
+    }
     true
 }
 
-/// Registers a plugin's backend (`PluginApi::register_bot_backend`), as [`register`].
-pub fn register_plugin(plugin: ts_plugin_api::PluginId, b: Rc<dyn BotBackend>) -> bool {
-    if !register(b) {
-        return false;
-    }
+/// Whether a backend `registered` just now takes over the running map: a map start chose the
+/// map's backend already, the map runs `native` (the fallback for a name not registered then),
+/// and `ts_bot_backend` resolves to the new one.
+pub fn late_switch(started: bool, running: &str, wanted: &str, registered: &str) -> bool {
+    started && running == NATIVE && wanted.eq_ignore_ascii_case(registered)
+}
+
+/// The backends of `plugin`, removed from the registry (with their places).
+fn take_plugin(plugin: ts_plugin_api::PluginId) -> Vec<Rc<dyn BotBackend>> {
     let mut r = REGISTRY.0.borrow_mut();
-    let i = r.backends.len() - 1;
-    r.plugins.insert(i, plugin);
-    true
+    let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut r.backends).into_iter().partition(|(_, p)| *p == Some(plugin));
+    r.backends = kept;
+    gone.into_iter().map(|(b, _)| b).collect()
 }
 
 /// Drops the backends of a plugin that failed to load (before any map start used them).
 pub fn forget_plugin(plugin: ts_plugin_api::PluginId) {
-    let mut r = REGISTRY.0.borrow_mut();
-    let gone: Vec<usize> = r.plugins.iter().filter(|(_, p)| **p == plugin).map(|(i, _)| *i).collect();
-    for &i in gone.iter().rev() {
-        r.backends.remove(i);
+    take_plugin(plugin);
+}
+
+/// Version 7: an attached plugin detached. Its backends are unregistered; if one was active, it
+/// is deactivated and native takes over now, the bots it made kicked (as a map start switching
+/// backends, [`switch_to`]). `ts_bot_backend` may still name it: it then resolves to native
+/// (warned once), so the map isn't reloaded for it.
+pub fn drop_plugin(plugin: ts_plugin_api::PluginId) {
+    let was_active = active_plugin() == Some(plugin);
+    let gone = take_plugin(plugin);
+    if !was_active {
+        return;
     }
-    let kept: BTreeMap<usize, ts_plugin_api::PluginId> =
-        r.plugins.iter().filter(|(_, p)| **p != plugin).map(|(&i, &p)| (i - gone.iter().filter(|&&g| g < i).count(), p)).collect();
-    r.plugins = kept;
+    let native = REGISTRY.0.borrow().backends.first().map(|(b, _)| b.clone());
+    let Some(native) = native else { return };
+    let old = REGISTRY.0.borrow_mut().active.replace(native.clone());
+    if let Some(o) = old.or_else(|| gone.into_iter().next()) {
+        o.deactivate();
+    }
+    kick_all_but(native.name());
+    engine().print(&format!("[ts] bots: backend {} (its plugin detached)\n", native.name()));
+    native.activate();
 }
 
 /// The plugin whose backend is active, if a plugin's is.
 pub fn active_plugin() -> Option<ts_plugin_api::PluginId> {
     let r = REGISTRY.0.borrow();
     let a = r.active.as_ref()?;
-    let i = r.backends.iter().position(|b| Rc::ptr_eq(b, a))?;
-    r.plugins.get(&i).copied()
+    r.backends.iter().find(|(b, _)| Rc::ptr_eq(b, a)).and_then(|(_, p)| *p)
 }
 
 /// Whether a backend of that name is registered.
 pub fn is_registered(name: &str) -> bool {
-    REGISTRY.0.borrow().backends.iter().any(|x| x.name().eq_ignore_ascii_case(name))
+    REGISTRY.0.borrow().backends.iter().any(|(x, _)| x.name().eq_ignore_ascii_case(name))
 }
 
 /// The active backend: the one the last map start selected (native until then).
@@ -191,7 +236,7 @@ pub fn active() -> Rc<dyn BotBackend> {
     if let Some(a) = &r.active {
         return a.clone();
     }
-    r.backends.first().cloned().unwrap_or_else(|| Rc::new(crate::bots::backend::Native))
+    r.backends.first().map(|(b, _)| b.clone()).unwrap_or_else(|| Rc::new(crate::bots::backend::Native))
 }
 
 /// The backend `value` (`ts_bot_backend`) names among `names` (registered, native first): its
@@ -210,10 +255,10 @@ pub fn wanted() -> Rc<dyn BotBackend> {
     let value = engine().cvar_string(c"ts_bot_backend").to_string_lossy().into_owned();
     let (pick, unknown) = {
         let r = REGISTRY.0.borrow();
-        let names: Vec<&str> = r.backends.iter().map(|b| b.name()).collect();
+        let names: Vec<&str> = r.backends.iter().map(|(b, _)| b.name()).collect();
         let pick = select(&names, &value);
         let native = names.iter().position(|n| *n == NATIVE).unwrap_or(0);
-        (r.backends.get(pick.unwrap_or(native)).cloned(), pick.is_none())
+        (r.backends.get(pick.unwrap_or(native)).map(|(b, _)| b.clone()), pick.is_none())
     };
     if unknown && !REGISTRY.0.borrow().warned.contains(&value) {
         REGISTRY.0.borrow_mut().warned.push(value.clone());
@@ -230,7 +275,13 @@ pub fn map_start() {
     if REGISTRY.0.borrow().backends.is_empty() {
         return;
     }
-    let new = wanted();
+    REGISTRY.0.borrow_mut().started = true;
+    switch_to(wanted());
+}
+
+/// Makes `new` the active backend if it isn't: the old one is deactivated and the bots it made
+/// kicked (the quota adds the new backend's), then `new` is activated.
+fn switch_to(new: Rc<dyn BotBackend>) {
     let old = REGISTRY.0.borrow().active.clone();
     let changed = old.as_ref().is_none_or(|o| !Rc::ptr_eq(o, &new));
     if !changed {
@@ -409,6 +460,15 @@ pub fn live_fake_clients() -> Vec<*mut edict_t> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_late_backend_takes_over_native_only() {
+        assert!(late_switch(true, NATIVE, "rcbot_amxx", "rcbot_amxx"), "plugin_init registered what the cvar names");
+        assert!(late_switch(true, NATIVE, "RCBot_AMXX", "rcbot_amxx"), "case doesn't matter");
+        assert!(!late_switch(false, NATIVE, "rcbot_amxx", "rcbot_amxx"), "before the first map start: the map start picks");
+        assert!(!late_switch(true, NATIVE, NATIVE, "rcbot_amxx"), "the cvar names another");
+        assert!(!late_switch(true, "test", "rcbot_amxx", "rcbot_amxx"), "a plugin backend runs: the map reload decides");
+    }
 
     #[test]
     fn selection_by_name() {
