@@ -24,6 +24,9 @@ Goals:
 * **An approval covers exact bytes.** It records a SHA-256 of every file in the plugin. If any
   file changes, disappears or appears, for any reason, the plugin doesn't load and the player is
   asked again, and told what changed.
+* **Servers can require matching versions** of the port client and of each plugin, and block
+  plugin versions they don't want; mismatched clients are refused or told exactly what to get
+  (§13).
 * **Servers can offer plugins.** The player sees the details before anything is downloaded
   (name, publisher, version, size, signature, what it says it does) and approves or refuses.
   A server can mark a plugin as required; it can't install one.
@@ -259,7 +262,7 @@ The port registers `TSPkg` after TS's 64 messages, so TS's registration order is
 (design.md §2).
 
 ```
-byte    op            1 offer, 2 withdraw
+byte    op            1 offer, 2 withdraw (ops 3 and 4: §13.3)
 string  id            ≤ 32
 string  version       ≤ 16
 long    size          package bytes
@@ -323,6 +326,8 @@ approved one is shown as a downgrade, with a warning, and "Allow" isn't the defa
 ```
 tspkg <id> <version> <state> [reason]
 state: have | offered | downloading | installed | loaded | denied | blocked | unsupported | failed
+       | suspended | restart        (§13.3)
+tspkg list <id>@<version> ...       every loaded plugin, sent once after the first TSPkg (§13.2)
 ```
 
 * `denied` covers both "Not now" and "Never". The server isn't told which.
@@ -448,6 +453,10 @@ tsmod-launcher.
   * the offer state machine and the offer queue and limits;
   * the `TSPkg` encoding within 192 bytes;
   * `tspkg` parsing and rate limits on the server.
+  * the version policies (`any`, `same_minor`, `exact`, requirements) against `parse_version`;
+  * `match` rules, `[[block]]` and `unlisted` decisions;
+  * the grace period;
+  * the refusal text fitting the reject buffer.
 * **e2e (`cargo xtask e2e`, FWGS root with a dedicated server):**
   1. Approve a stub plugin with `plugin-approve`, start, and check it loads. Change one byte, add
      an extra file, delete a file; each must stop it loading, and the log must name the change.
@@ -461,7 +470,14 @@ tsmod-launcher.
      nothing in `cl_plugins/`.
   4. An original TS 3.0 client on the same server must not receive `TSPkg` and must play
      normally.
-  5. Steam HL25: manual for v1 (validation.md §5, Steam status invisible while testing).
+  5. **Version matching:**
+     * With `sv_client_version exact`, a client built with another version must be refused at
+       connect, and the reason must name both versions. With `sv_client_require_port 1`, the
+       original TS client must be refused too.
+     * With a `[[block]]` on the stub plugin's version, `suspend` must stop its callbacks (it
+       logs every call) and `kick` must drop the client with the reason.
+     * A `match = "exact"` offer for a newer stub version must answer `restart`.
+  6. Steam HL25: manual for v1 (validation.md §5, Steam status invisible while testing).
 
 ## 12. Wire compatibility
 
@@ -477,7 +493,126 @@ tsmod-launcher.
   them.
 * This client on an original TS server gets no offers, because nothing sends them.
 
-## 13. Open questions
+## 13. Version matching
+
+A server can refuse clients whose port version doesn't match its own, and can require exact or
+compatible versions of plugins, or block plugin versions outright. This is for compatibility,
+not anti-cheat: a modified client can report any version it likes, and the docs and cvar help
+say so.
+
+### 13.1 The port client's version
+
+The client already reports its version in the `_tsrs` userinfo (§12), and the server already has
+a refusal path in `ClientConnect` (`rules::client_connect`, which returns the engine's reject
+reason). So the check happens before the player joins, with no new message.
+
+| cvar (server, port addition) | default | meaning |
+|---|---|---|
+| `sv_client_version` | `any` | `any`; `same_minor` (same `major.minor`, the TS version: 3.0); `exact` (the server's own `VERSION`); or a semver requirement such as `>=3.0.8, <3.1` |
+| `sv_client_require_port` | 0 | 1 also refuses clients without `_tsrs`: TS 3.0's original client, and port clients older than `_tsrs` |
+| `sv_client_version_url` | `""` | shown in the refusal; the default text names the launcher and the releases page |
+
+* **The refusal reason** is formatted, for example "This server needs The Specialists port
+  3.0.8 (you have 3.0.7). Update with the TS launcher, or from <url>." It's cut to the engine's
+  reject buffer, about 128 bytes. `rules::client_connect`'s `&'static str` reason becomes an
+  owned string for this.
+* **Bots** are never checked. A `_tsrs` value that isn't a version (`parse_version` fails)
+  counts as a mismatch, unless the policy is `any`.
+* **Gameplay rulesets:** a ruleset's own client check (`gameplay::refuse_client`, the TS 2.1
+  mode's) runs first and keeps its own reason.
+* **The plugin API** gets `client_port_version(edict)`, so AMX Mod X plugins can apply a policy
+  of their own.
+* **The client side:**
+  * The client compares the server's version (`SrvSett` keys 5–7) with its own and prints the
+    difference in the console, without refusing.
+  * With `cl_version_strict 1` (default 0), it refuses to stay on a server whose version differs
+    from its own (same rules as `exact`). It disconnects with the same kind of message, for
+    players who want to know they're on matching code.
+
+### 13.2 Plugin versions
+
+Each `[[offer]]` in `plugin_offers.toml` gets a `match` rule, and a new `[[block]]` table lists
+plugins that may not be used on the server:
+
+```toml
+[[offer]]
+id = "webview"
+version = "0.2.0"
+required = true
+match = "compatible"      # exact | compatible | any | a semver requirement (">=0.2.0, <0.4")
+# ... url, sha256, size, note as in §6.1
+
+[[block]]
+id = "webview"
+versions = "<0.2.0"       # semver requirement; "*" blocks every version
+action = "suspend"        # suspend (default) | kick
+reason = "0.1.x breaks the vote page"
+
+[policy]
+unlisted = "allow"        # allow (default) | suspend | kick: plugins in neither table
+```
+
+* `compatible` means the same major version for `1.0.0` and later, and the same minor version
+  before `1.0.0`, as Cargo's caret rule does. `exact` means the offered version only.
+* **What the client reports:** after the first `TSPkg` from the server, the client sends
+  `tspkg list` naming every loaded plugin and version, chunked like other commands under 128
+  bytes. A client that sends nothing within `sv_plugin_check_time` (default 15 s) is treated as
+  having no plugins.
+* **Hand-installed libraries** report as `manual:<name>@0.0.0`. Only `unlisted` and an explicit
+  `[[block]] id = "manual:*"` apply to them.
+
+### 13.3 Enforcement
+
+For each loaded plugin the client reports, and each required offer, the server decides:
+
+| Situation | What happens |
+|---|---|
+| A required plugin isn't installed | the normal offer (§6.3); refusing it follows `sv_plugin_required_kick` |
+| A required plugin is loaded, but its version doesn't satisfy `match` | an update offer for the server's version (§6.4); the client also gets op 3 `require` |
+| A loaded plugin satisfies `match` | nothing |
+| A loaded plugin matches a `[[block]]`, or is unlisted with `unlisted` ≠ `allow` | op 4 `block` with its action |
+
+New `TSPkg` ops (same framing as §6.2):
+
+```
+op 3 require   id, version requirement (≤ 48), flags (1 required)
+op 4 block     id, version requirement, byte action (1 suspend, 2 kick), string reason (≤ 64)
+```
+
+* **Suspend:** the port stops calling the plugin's callbacks while the player is on this server:
+  `redraw`, `key_event`, `user_message`, `usercmd`, `message_pre`, `command_pre`, and the rest.
+  The port controls all of them, so a suspended plugin can't draw, intercept or receive
+  messages.
+  * First it calls a new `suspend(reason)` callback, where the plugin must hide its surfaces and
+    pause its helpers. The webview plugin closes both surfaces and lets the host idle.
+  * On disconnect it calls `resume()` and dispatches normally again.
+  * The client answers `tspkg <id> <version> suspended`. A client that doesn't answer within
+    `sv_plugin_check_time` is kicked.
+* **Kick:** the server drops the player with the block's reason, naming the plugin and version.
+  The client shows the reason in its disconnect dialog.
+* **Getting the right version:** a loaded plugin can't be swapped while the game runs (§9), so
+  an update for a loaded plugin answers `restart`. The card then offers "Restart and reconnect":
+  it writes the server address to `cl_plugins_data/.reconnect` and quits. At the next start the
+  new version is verified as usual, and the port connects to that address. Whether the engines
+  allow a clean relaunch is open question 7; without one, the card says "restart the game".
+* **Grace period:** the server applies none of this until `sv_plugin_check_time` has passed or
+  the client has answered every offer, so a player who is approving and downloading isn't
+  kicked mid-download. Required-plugin kicks wait for the download to finish, up to
+  `sv_plugin_download_time` (default 300 s).
+* **The plugin API** gets the event `client_plugin_list(edict, plugins)`, and
+  `client_plugin_version(edict, id)`.
+* **Logs:** the server logs each refusal, suspension and kick with the player, the plugin, the
+  version and the rule that matched.
+
+### 13.4 Client cvars
+
+| cvar | default | meaning |
+|---|---|---|
+| `cl_version_strict` | 0 | 1 disconnects from servers whose port version differs from the client's |
+
+`cl_plugins_list` shows, for the current server, which loaded plugins are suspended and why.
+
+## 14. Open questions
 
 1. `TSPkg` can exceed 192 bytes with a long URL and note. Should it chunk, as the webview `TSExt`
    framing does, or move the note into the manifest?
@@ -496,8 +631,15 @@ tsmod-launcher.
    start of the helper?
 6. Should the launcher be able to install packages from the mod's own release feed, with the
    same cards, so players needn't wait for a server to offer them?
+7. **Restart and reconnect** (§13.3): can the client quit and relaunch itself cleanly?
+   * HL25: the Steam URL `steam://rungameid/70//-game ts +connect`.
+   * FWGS: re-exec with `+connect`.
+   * Or should the launcher watch `.reconnect` and do it? Under Wine the self-relaunch is the
+     least certain.
+8. **Mod version refusals and the launcher:** should the refusal reason carry a machine-readable
+   tag, such as `[tsrs:3.0.8]`, so tsmod-launcher can offer to fetch that release and reconnect?
 
-## 14. Milestones (port issues)
+## 15. Milestones (port issues)
 
 1. `plugin-pkg` crate: manifest, store, hashing, comparison, signatures, with the unit tests.
 2. Client: the loader with start-up verification and the SDL prompt, hand-installed libraries,
@@ -507,3 +649,9 @@ tsmod-launcher.
 4. Client: the offer flow, downloads, the VGUI cards and their safeguards (§7.3), late loading,
    e2e.
 5. tsmod-launcher: the same verification and approval UI, using `plugin-pkg`.
+6. Version matching:
+   * the mod version: `sv_client_version`, `sv_client_require_port`, the formatted refusal,
+     `cl_version_strict` and `client_port_version`. This part needs no plugins, and can ship
+     first.
+   * plugins: `match`, `[[block]]` and `[policy]`, `tspkg list`, ops 3 and 4, suspend and
+     resume, restart and reconnect, and the plugin API events.
